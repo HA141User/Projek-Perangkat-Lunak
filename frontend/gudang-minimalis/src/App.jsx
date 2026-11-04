@@ -4,7 +4,12 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 // Eager — always needed
 import LoginPage from './pages/LoginPage'
 import StaffDashboard from './pages/StaffDashboard'
+import DataBarang from './pages/DataBarang'
+import AuditOpname from './pages/AuditOpname'
 import WarehouseDashboard from './pages/WarehouseDashboard'
+import PersetujuanOpname from './pages/PersetujuanOpname'
+import NotificationSettings from './pages/NotificationSettings'
+import LaporanInventaris from './pages/LaporanInventaris'
 import AdminDashboard from './pages/AdminDashboard'
 
 // Lazy — loaded on demand
@@ -71,6 +76,12 @@ export default function App() {
         <Route path="/kepala-gudang/*"           element={<Placeholder title="Modul Kepala Gudang" />} />
 
         {/* Admin Routes */}
+        <Route path="/staff/barang" element={<DataBarang />} />
+        <Route path="/staff/opname" element={<AuditOpname />} />
+        <Route path="/kepala-gudang" element={<WarehouseDashboard />} />
+        <Route path="/kepala-gudang/persetujuan" element={<PersetujuanOpname />} />
+        <Route path="/kepala-gudang/notifikasi" element={<NotificationSettings />} />
+        <Route path="/kepala-gudang/laporan" element={<LaporanInventaris />} />
         <Route path="/admin" element={<AdminDashboard />} />
         <Route path="/admin/pengguna"        element={<SafeLazy component={AdminPengguna} />} />
         <Route path="/admin/barang"          element={<SafeLazy component={AdminBarang} />} />
