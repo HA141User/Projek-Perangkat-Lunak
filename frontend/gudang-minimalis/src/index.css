@@ -7,11 +7,15 @@
   --color-brand-hover: #1D4ED8;
   --color-page: #F8F9FF;
   --color-field: #F1F3FF;
+  --color-chip: #E9EDFF;
   --color-ink: #141B2B;
   --color-muted: #747686;
   --color-green: #004E47;
   --color-critical: #D90000;
   --color-muted-dark: #434655;
+
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "DM Mono", monospace;
 }
 
 html {

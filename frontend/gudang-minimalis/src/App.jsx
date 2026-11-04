@@ -8,7 +8,12 @@ import {
 
 import LoginPage from './pages/LoginPage'
 import StaffDashboard from './pages/StaffDashboard'
+import DataBarang from './pages/DataBarang'
+import AuditOpname from './pages/AuditOpname'
 import WarehouseDashboard from './pages/WarehouseDashboard'
+import PersetujuanOpname from './pages/PersetujuanOpname'
+import NotificationSettings from './pages/NotificationSettings'
+import LaporanInventaris from './pages/LaporanInventaris'
 import AdminDashboard from './pages/AdminDashboard'
 
 function Placeholder({ title }) {
@@ -34,7 +39,12 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
 
         <Route path="/staff" element={<StaffDashboard />} />
+        <Route path="/staff/barang" element={<DataBarang />} />
+        <Route path="/staff/opname" element={<AuditOpname />} />
         <Route path="/kepala-gudang" element={<WarehouseDashboard />} />
+        <Route path="/kepala-gudang/persetujuan" element={<PersetujuanOpname />} />
+        <Route path="/kepala-gudang/notifikasi" element={<NotificationSettings />} />
+        <Route path="/kepala-gudang/laporan" element={<LaporanInventaris />} />
         <Route path="/admin" element={<AdminDashboard />} />
 
         {/* Halaman modul yang belum dibuat */}
