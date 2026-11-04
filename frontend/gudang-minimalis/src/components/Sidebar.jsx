@@ -1,8 +1,5 @@
-import { NavLink } from 'react-router'
-import { LogOut, Archive } from 'lucide-react'
-
-export default function Sidebar({ items, admin = false, onLogout, userName }) {
 import { Link, NavLink } from 'react-router'
+import { LogOut, Archive } from 'lucide-react'
 
 export default function Sidebar({
   items,
@@ -12,6 +9,8 @@ export default function Sidebar({
   activeStyle = 'chip',
   logoutLabel = 'Keluar / Log Out',
   logoutShortcut,
+  onLogout,
+  userName,
 }) {
   if (wide) {
     const solid = activeStyle === 'solid'
