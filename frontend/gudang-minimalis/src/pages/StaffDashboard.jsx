@@ -1,169 +1,164 @@
-
-import { Link } from 'react-router'
-import {
-  Download,
-  Upload,
-  ArrowRight,
-  Clock3,
-  MapPin,
-  ScanLine,
-} from 'lucide-react'
-import Sidebar from '../components/Sidebar'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router'
+import { Download, Upload, ArrowRight } from 'lucide-react'
+import AppShell from '../components/AppShell'
+import Badge from '../components/ui/Badge'
+import { Card, CardHeader, CardBody } from '../components/ui/Card'
+import { getAuth, clearAuth } from '../lib/auth'
 
 const menu = [
   { label: 'Beranda', to: '/staff' },
-  { label: 'Data Barang', to: '/staff/barang' },
+  { label: 'Barang Masuk', to: '/staff/masuk' },
+  { label: 'Barang Keluar', to: '/staff/keluar' },
   { label: 'Audit Opname', to: '/staff/opname' },
+  { label: 'Katalog Barang', to: '/staff/barang' },
+  { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const transactions = [
-  { time: '10:42 WIB', rack: 'Rak A-04', type: 'Masuk', amount: '24 Dus' },
-  { time: '09:15 WIB', rack: 'Rak B-12', type: 'Keluar', amount: '10 Dus' },
-  { time: '08:30 WIB', rack: 'Rak C-01', type: 'Masuk', amount: '50 Dus' },
+const DUMMY_TRANSACTIONS = [
+  { id: 1, waktu: '09:14:02', rak: 'A-03', tipe: 'IN', jumlah: 24 },
+  { id: 2, waktu: '09:02:47', rak: 'B-11', tipe: 'OUT', jumlah: 6 },
+  { id: 3, waktu: '08:55:30', rak: 'C-07', tipe: 'IN', jumlah: 48 },
+  { id: 4, waktu: '08:40:12', rak: 'A-01', tipe: 'OUT', jumlah: 12 },
+  { id: 5, waktu: '08:22:58', rak: 'D-02', tipe: 'IN', jumlah: 100 },
+  { id: 6, waktu: '08:10:35', rak: 'B-05', tipe: 'OUT', jumlah: 3 },
 ]
 
-function TransactionCard({ incoming, title, description, href }) {
-  const Icon = incoming ? Download : Upload
+export default function StaffDashboard() {
+  const navigate = useNavigate()
+  const { user } = getAuth()
+
+  function handleLogout() {
+    clearAuth()
+    navigate('/login')
+  }
 
   return (
-    <article className="overflow-hidden rounded-lg border border-slate-100 bg-white shadow-sm">
-      <div className="p-6">
-        <div className="mb-5 flex items-start justify-between">
-          <div className="grid size-12 place-items-center rounded-md bg-field text-brand">
-            <Icon size={24} />
-          </div>
-          <span className="flex items-center gap-1 bg-field px-2 py-1 font-mono text-[8px]">
-            SCAN <ScanLine size={12} />
-          </span>
-        </div>
-
-        <Link
-          to={href}
-          className="flex items-center gap-1 text-[17px] font-semibold tracking-tight hover:text-brand"
-        >
-          {title}
-          <ArrowRight size={16} className="text-brand" />
-        </Link>
-
-        <p className="mt-1 text-[10px] text-muted-dark">
-          {description}
+    <AppShell
+      menuItems={menu}
+      userName={user?.name || 'Staf Gudang'}
+      onLogout={handleLogout}
+      pageTitle="Dashboard Operasional Staf"
+    >
+      {/* Section heading */}
+      <div className="mb-6">
+        <h2 className="text-[20px] font-semibold text-[#111827]">Dashboard Operasional Staf</h2>
+        <p className="mt-1 text-[14px] text-[#6B7280]">
+          Rekam transaksi barang masuk dan keluar serta pantau riwayat harian.
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-[#F7F8FF] px-5 py-3">
-        <span className="text-[8px] font-medium tracking-wide">
-          {incoming ? 'METODE: BARCODE DUS + LABEL RAK' : 'VALIDASI SURAT JALAN / DO'}
-        </span>
-        <Link to={href} className="text-[9px] font-medium text-brand">
-          Buka Kamera →
-        </Link>
-      </div>
-    </article>
-  )
-}
-
-export default function StaffDashboard() {
-  return (
-    <div className="flex min-h-screen bg-white max-md:flex-col">
-      <Sidebar items={menu} />
-
-      <main className="min-w-0 flex-1 px-5 pb-8">
-        <header className="mb-8 pt-4">
-          <h1 className="text-xs font-semibold">Halo, Staf Gudang</h1>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full bg-[#E9EDFF] px-3 py-1 font-mono text-[8px]">
-                <span className="mr-1 text-green">●</span>
-                Terminal GD-01 · Online
-              </span>
-              <span className="font-mono text-[8px] text-muted">
-                Shift Pagi (07:00 - 15:00)
-              </span>
+      {/* Action Cards */}
+      <div className="mb-6 grid grid-cols-2 gap-5 max-sm:grid-cols-1">
+        {/* Barang Masuk */}
+        <Link
+          to="/staff/masuk"
+          className="group flex min-h-[140px] flex-col justify-between rounded-xl bg-[#0037B0] p-6 text-white transition hover:bg-[#1D4ED8]"
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-[13px] font-semibold uppercase tracking-widest text-white/70">
+                Barang Masuk
+              </p>
+              <h3 className="mt-2 text-[20px] font-semibold">Catat Penerimaan</h3>
+              <p className="mt-1 text-[14px] text-white/70">
+                Scan QR rak → input jumlah → simpan
+              </p>
             </div>
-
-            <span className="flex items-center gap-1 text-[9px]">
-              <ScanLine size={13} className="text-brand" />
-              Scanner Siap
+            <span className="grid size-10 place-items-center rounded-lg bg-white/10 text-white">
+              <Download size={22} />
             </span>
           </div>
-        </header>
-
-        <section className="grid grid-cols-2 gap-5 max-lg:gap-3 max-md:grid-cols-1">
-          <TransactionCard
-            incoming
-            title="Masuk Barang"
-            description="Penerimaan barang & penempatan stok rak gudang"
-            href="/staff/barang-masuk"
-          />
-
-          <TransactionCard
-            title="Keluar Barang"
-            description="Pengambilan barang & pengiriman keluar gudang"
-            href="/staff/barang-keluar"
-          />
-        </section>
-
-        <section className="mt-9">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold">
-                Riwayat Transaksi Hari Ini
-              </h2>
-              <span className="rounded-full bg-[#E9EDFF] px-2 py-1 text-[8px]">
-                3 aktivitas tercatat
-              </span>
-            </div>
-
-            <Link to="/staff/log" className="text-[9px] text-brand">
-              Lihat Semua Log ↗
-            </Link>
+          <div className="mt-4 flex items-center gap-1.5 text-[14px] font-medium text-white/80 group-hover:text-white">
+            Mulai Pencatatan <ArrowRight size={15} />
           </div>
+        </Link>
 
-          <div className="overflow-x-auto rounded-md border border-slate-100">
-            <table className="w-full min-w-[570px] border-collapse text-left">
-              <thead className="bg-field text-[8px]">
-                <tr>
-                  <th className="px-4 py-2 font-medium">WAKTU</th>
-                  <th className="px-4 py-2 font-medium">LOKASI RAK</th>
-                  <th className="px-4 py-2 font-medium">JENIS</th>
-                  <th className="px-4 py-2 text-right font-medium">JUMLAH DUS / ITEM</th>
+        {/* Barang Keluar */}
+        <Link
+          to="/staff/keluar"
+          className="group flex min-h-[140px] flex-col justify-between rounded-xl bg-[#111827] p-6 text-white transition hover:bg-[#1f2937]"
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-[13px] font-semibold uppercase tracking-widest text-white/70">
+                Barang Keluar
+              </p>
+              <h3 className="mt-2 text-[20px] font-semibold">Catat Pengeluaran</h3>
+              <p className="mt-1 text-[14px] text-white/70">
+                Scan QR rak → input jumlah → simpan
+              </p>
+            </div>
+            <span className="grid size-10 place-items-center rounded-lg bg-white/10 text-white">
+              <Upload size={22} />
+            </span>
+          </div>
+          <div className="mt-4 flex items-center gap-1.5 text-[14px] font-medium text-white/80 group-hover:text-white">
+            Mulai Pencatatan <ArrowRight size={15} />
+          </div>
+        </Link>
+      </div>
+
+      {/* Riwayat Transaksi */}
+      <Card>
+        <CardHeader
+          title="Riwayat Transaksi Terakhir"
+          description="Hari ini — WH-01"
+          actions={
+            <Link
+              to="/staff/riwayat"
+              className="flex items-center gap-1 text-[13px] font-medium text-[#0037B0] hover:underline"
+            >
+              Semua <ArrowRight size={13} />
+            </Link>
+          }
+        />
+        <CardBody className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  <th className="px-5 py-3 text-left text-[12px] font-medium uppercase tracking-wide text-[#6B7280]">
+                    Waktu
+                  </th>
+                  <th className="px-5 py-3 text-left text-[12px] font-medium uppercase tracking-wide text-[#6B7280]">
+                    Rak
+                  </th>
+                  <th className="px-5 py-3 text-left text-[12px] font-medium uppercase tracking-wide text-[#6B7280]">
+                    Tipe
+                  </th>
+                  <th className="px-5 py-3 text-right text-[12px] font-medium uppercase tracking-wide text-[#6B7280]">
+                    Jumlah
+                  </th>
                 </tr>
               </thead>
-
               <tbody>
-                {transactions.map((item) => (
-                  <tr key={item.time} className="border-t border-slate-100 text-[9px] hover:bg-slate-50">
-                    <td className="px-4 py-3 font-mono">
-                      <span className="inline-flex items-center gap-1">
-                        <Clock3 size={11} /> {item.time}
-                      </span>
+                {DUMMY_TRANSACTIONS.map((tx) => (
+                  <tr
+                    key={tx.id}
+                    className="border-b border-[#E5E7EB] last:border-0 hover:bg-[#F9FAFB]"
+                  >
+                    <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
+                      {tx.waktu}
                     </td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-1 bg-field px-2 py-1 font-mono text-[8px]">
-                        <MapPin size={10} className="text-brand" />
-                        {item.rack}
-                      </span>
+                    <td className="px-5 py-3 font-mono text-[13.5px] font-medium text-[#111827]">
+                      {tx.rak}
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`rounded-sm px-2 py-1 text-[8px] ${
-                        item.type === 'Masuk'
-                          ? 'bg-[#DCE4FF] text-[#062D91]'
-                          : 'bg-slate-100 text-slate-700'
-                      }`}>
-                        ● {item.type}
-                      </span>
+                    <td className="px-5 py-3">
+                      <Badge variant={tx.tipe === 'IN' ? 'success' : 'danger'}>
+                        {tx.tipe === 'IN' ? 'Masuk' : 'Keluar'}
+                      </Badge>
                     </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {item.amount}
+                    <td className="px-5 py-3 text-right font-mono text-[13.5px] font-semibold text-[#111827]">
+                      {tx.jumlah.toLocaleString('id-ID')}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </section>
-      </main>
-    </div>
+        </CardBody>
+      </Card>
+    </AppShell>
   )
 }
