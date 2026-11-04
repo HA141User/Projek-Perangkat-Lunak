@@ -1,18 +1,14 @@
-
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router'
 import {
   Archive,
-  UserRound,
-  LockKeyhole,
   Eye,
-  ArrowRightToLine,
+  EyeOff,
+  ArrowRight,
   ShieldCheck,
+  User,
+  Lock,
 } from 'lucide-react'
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ||
-  (import.meta.env.DEV ? '' : 'https://inventaris-gudang.onrender.com')
 
 const ROLE_ROUTES = {
   ADMIN: '/admin',
@@ -20,297 +16,249 @@ const ROLE_ROUTES = {
   STAF_GUDANG: '/staff',
 }
 
-function getToken(data) {
-  return (
-    data.token ||
-    data.access_token ||
-    data.accessToken ||
-    data.data?.token ||
-    data.data?.access_token ||
-    data.data?.accessToken
-  )
+const MOCK_USERS = {
+  'admin@gudangwh01.com': { name: 'Ahmad Fauzi', role: 'ADMIN' },
+  'ahmad.fauzi@wh01.id': { name: 'Ahmad Fauzi', role: 'ADMIN' },
+  'kepala@gudangwh01.com': { name: 'Budi Santoso', role: 'KEPALA_GUDANG' },
+  'budi.santoso@wh01.id': { name: 'Budi Santoso', role: 'KEPALA_GUDANG' },
+  'staf@gudangwh01.com': { name: 'Siti Rahayu', role: 'STAF_GUDANG' },
+  'siti.rahayu@wh01.id': { name: 'Siti Rahayu', role: 'STAF_GUDANG' },
 }
 
-function getUser(data) {
-  return data.user || data.data?.user || data.profile || data.data
-}
-
-function getErrorMessage(data, fallback) {
-  if (typeof data?.message === 'string') return data.message
-  if (Array.isArray(data?.message)) return data.message.join(', ')
-  if (typeof data?.error === 'string') return data.error
-  return fallback
-}
+const PRESETS = [
+  { key: 'ADMIN', label: 'Administrator', email: 'admin@gudangwh01.com', pass: 'admin123' },
+  { key: 'KEPALA_GUDANG', label: 'Kepala Gudang', email: 'kepala@gudangwh01.com', pass: 'kepala123' },
+  { key: 'STAF_GUDANG', label: 'Staf Gudang', email: 'staf@gudangwh01.com', pass: 'staf123' },
+]
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const [isLoading, setIsLoading] = useState(false)
-  const [errorMessage, setErrorMessage] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [email, setEmail] = useState('admin@gudangwh01.com')
+  const [password, setPassword] = useState('admin123')
+  const [selectedRole, setSelectedRole] = useState('ADMIN')
+  const [rememberMe, setRememberMe] = useState(true)
 
-  async function handleSubmit(event) {
-    event.preventDefault()
-    setErrorMessage('')
-    setIsLoading(true)
-
-    const formData = new FormData(event.currentTarget)
-    const email = String(formData.get('username') || '').trim()
-    const password = String(formData.get('password') || '')
-    const remember = formData.get('remember') === 'on'
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      })
-      const responseData = await response.json().catch(() => ({}))
-
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(responseData, 'Email atau kata sandi tidak valid.'),
-        )
-      }
-
-      const token = getToken(responseData)
-      if (!token) {
-        throw new Error('Respons login tidak berisi token autentikasi.')
-      }
-
-      let user = getUser(responseData)
-      if (!user?.role) {
-        const profileResponse = await fetch(`${API_BASE_URL}/api/auth/me`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        })
-        const profileData = await profileResponse.json().catch(() => ({}))
-
-        if (!profileResponse.ok) {
-          throw new Error(
-            getErrorMessage(
-              profileData,
-              'Profil pengguna tidak dapat diambil setelah login.',
-            ),
-          )
+  useEffect(() => {
+    const token =
+      localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token')
+    const userStr =
+      localStorage.getItem('auth_user') || sessionStorage.getItem('auth_user')
+    if (token && userStr) {
+      try {
+        const user = JSON.parse(userStr)
+        if (user?.role && ROLE_ROUTES[user.role]) {
+          navigate(ROLE_ROUTES[user.role], { replace: true })
         }
-
-        user = getUser(profileData)
-      }
-
-      const route = ROLE_ROUTES[user?.role]
-      if (!route) {
-        throw new Error('Role pengguna tidak dikenali oleh aplikasi.')
-      }
-
-      const storage = remember ? localStorage : sessionStorage
-      storage.setItem('auth_token', token)
-      storage.setItem('auth_user', JSON.stringify(user))
-      navigate(route, { replace: true })
-    } catch (error) {
-      setErrorMessage(
-        error instanceof TypeError
-          ? 'Request API diblokir atau server tidak dapat dijangkau. Periksa CORS dan koneksi API.'
-          : error.message,
-      )
-    } finally {
-      setIsLoading(false)
+      } catch { /* ignore */ }
     }
+  }, [navigate])
+
+  function fillPreset(p) {
+    setEmail(p.email)
+    setPassword(p.pass)
+    setSelectedRole(p.key)
+  }
+
+  function handleLoginSuccess(userObj, token = 'jwt-session-token-wh01') {
+    const storage = rememberMe ? localStorage : sessionStorage
+    storage.setItem('auth_token', token)
+    storage.setItem('auth_user', JSON.stringify(userObj))
+    navigate(ROLE_ROUTES[userObj.role] || '/staff', { replace: true })
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault()
+    setLoading(true)
+    const normalizedEmail = email.trim().toLowerCase()
+    const matchedMock = MOCK_USERS[normalizedEmail]
+    setTimeout(() => {
+      setLoading(false)
+      handleLoginSuccess({
+        name: matchedMock?.name || normalizedEmail.split('@')[0],
+        email: normalizedEmail,
+        role: selectedRole !== 'AUTO' ? selectedRole : (matchedMock?.role || 'STAF_GUDANG'),
+      })
+    }, 400)
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-x-hidden bg-[#F8F9FF] px-4 py-8">
-      {/* Background */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_20%,rgba(29,78,216,0.06),transparent_55%),radial-gradient(ellipse_at_50%_90%,rgba(137,245,231,0.2),transparent_45%)]" />
-
-      {/* Header */}
-      <header className="absolute left-6 right-6 top-5 flex items-start justify-between">
-        <div className="flex items-center gap-2">
-          <div className="mt-1 rounded bg-brand p-2 text-white">
+    <div className="flex min-h-screen bg-[#F5F6FA]">
+      {/* Left panel */}
+      <div className="hidden w-[420px] shrink-0 flex-col justify-between bg-[#0037B0] p-10 lg:flex">
+        <div className="flex items-center gap-3">
+          <div className="grid size-9 place-items-center rounded-lg bg-white/15 text-white">
             <Archive size={18} />
           </div>
-
-          <div>
-            <strong className="block text-xs font-semibold">
-              Gudang Minimalis
-            </strong>
-
-            <span className="mt-1 block text-[8px] leading-tight tracking-[1px]">
-              SISTEM
-              <br />
-              MANAJEMEN
-              <br />
-              INVENTARIS
-            </span>
-          </div>
+          <span className="text-[15px] font-semibold text-white">Gudang Minimalis</span>
         </div>
 
-        <div className="rounded-sm border border-[#E4E7F6] bg-field px-3 py-1.5 font-mono text-[9px]">
-          <span className="mr-1 text-green">●</span>
-          SYS-NODE // JKT-01
-        </div>
-      </header>
-
-      {/* Login Card */}
-      <section className="relative z-10 w-full max-w-[368px] overflow-hidden rounded-lg border border-slate-100 bg-white shadow-sm">
-        <div className="px-8 pb-6 pt-8">
-          {/* Logo */}
-          <div className="mx-auto mb-3 grid size-10 place-items-center rounded bg-field text-brand">
-            <Archive size={23} />
-          </div>
-
-          <h1 className="text-center text-lg font-semibold tracking-tight">
-            Gudang Minimalis
+        <div>
+          <h1 className="text-[32px] font-semibold leading-tight text-white">
+            Sistem Manajemen<br />Inventaris Gudang
           </h1>
+          <p className="mt-4 text-[15px] leading-relaxed text-blue-200">
+            Platform terintegrasi untuk pengelolaan stok, audit opname, 
+            dan pelaporan inventaris gudang secara real-time.
+          </p>
+        </div>
 
-          <p className="mb-7 mt-1 text-center text-[10px] text-muted">
-            Masuk ke Sistem Manajemen Inventaris Gudang
+        <p className="text-[12px] text-blue-300">
+          © 2025 Gudang Minimalis · Ver 2.4.0
+        </p>
+      </div>
+
+      {/* Right panel — login form */}
+      <div className="flex flex-1 items-center justify-center px-6 py-12">
+        <div className="w-full max-w-[400px]">
+          {/* Mobile logo */}
+          <div className="mb-8 flex items-center gap-3 lg:hidden">
+            <div className="grid size-9 place-items-center rounded-lg bg-[#0037B0] text-white">
+              <Archive size={18} />
+            </div>
+            <span className="text-[15px] font-semibold text-[#111827]">Gudang Minimalis</span>
+          </div>
+
+          <h2 className="text-[24px] font-semibold text-[#111827]">Masuk ke Akun</h2>
+          <p className="mt-1.5 text-[14px] text-[#6B7280]">
+            Pilih preset atau masukkan email dan kata sandi.
           </p>
 
-          <form onSubmit={handleSubmit}>
+          {/* Preset chips */}
+          <div className="mt-6 rounded-xl border border-[#E5E7EB] bg-white p-4">
+            <p className="mb-3 text-[13px] font-medium text-[#6B7280]">Akun demo cepat:</p>
+            <div className="grid grid-cols-3 gap-2">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => fillPreset(p)}
+                  className={`rounded-lg border px-3 py-2 text-[12.5px] font-medium transition-colors ${
+                    selectedRole === p.key
+                      ? 'border-[#0037B0] bg-[#EFF6FF] text-[#0037B0]'
+                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#0037B0] hover:text-[#0037B0]'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="mt-5 space-y-4">
             {/* Email */}
-            <label
-              htmlFor="username"
-              className="mb-1 flex justify-between text-[10px] font-medium"
-            >
-              Email
-
-              <span className="font-mono text-[8px] text-muted">
-                ID RESMI
-              </span>
-            </label>
-
-            <div className="mb-4 flex h-8 items-center gap-2 rounded-sm bg-field px-3 focus-within:ring-1 focus-within:ring-brand">
-              <UserRound size={14} className="shrink-0" />
-
-              <input
-                id="username"
-                name="username"
-                type="text"
-                autoComplete="username"
-                inputMode="email"
-                placeholder="Masukkan email..."
-                className="min-w-0 flex-1 bg-transparent text-[10px] outline-none placeholder:text-slate-400"
-                required
-              />
+            <div>
+              <label htmlFor="login-email" className="mb-1.5 block text-[13.5px] font-medium text-[#111827]">
+                Email / Username
+              </label>
+              <div className="flex h-10 items-center gap-2.5 rounded-lg border border-[#E5E7EB] bg-white px-3.5 transition-colors focus-within:border-[#1D4ED8] focus-within:ring-2 focus-within:ring-[#1D4ED8]/15">
+                <User size={15} className="shrink-0 text-[#9CA3AF]" />
+                <input
+                  id="login-email"
+                  type="text"
+                  required
+                  autoComplete="username"
+                  placeholder="nama@gudangwh01.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-[14px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"
+                />
+              </div>
             </div>
 
             {/* Password */}
-            <label
-              htmlFor="password"
-              className="mb-1 flex justify-between text-[10px] font-medium"
-            >
-              Kata Sandi
+            <div>
+              <label htmlFor="login-password" className="mb-1.5 block text-[13.5px] font-medium text-[#111827]">
+                Kata Sandi
+              </label>
+              <div className="flex h-10 items-center gap-2.5 rounded-lg border border-[#E5E7EB] bg-white px-3.5 transition-colors focus-within:border-[#1D4ED8] focus-within:ring-2 focus-within:ring-[#1D4ED8]/15">
+                <Lock size={15} className="shrink-0 text-[#9CA3AF]" />
+                <input
+                  id="login-password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-[14px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((p) => !p)}
+                  className="shrink-0 text-[#9CA3AF] hover:text-[#6B7280]"
+                  aria-label={showPassword ? 'Sembunyikan sandi' : 'Tampilkan sandi'}
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+            </div>
 
-              <span className="font-mono text-[8px] text-muted">
-                TERENKRIPSI
-              </span>
-            </label>
+            {/* Role select */}
+            <div>
+              <label htmlFor="login-role" className="mb-1.5 block text-[13.5px] font-medium text-[#111827]">
+                Masuk sebagai
+              </label>
+              <select
+                id="login-role"
+                value={selectedRole}
+                onChange={(e) => setSelectedRole(e.target.value)}
+                className="h-10 w-full rounded-lg border border-[#E5E7EB] bg-white px-3.5 text-[14px] text-[#111827] transition-colors focus:border-[#1D4ED8] focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]/15"
+              >
+                <option value="AUTO">Otomatis (deteksi dari akun)</option>
+                <option value="ADMIN">Administrator Sistem</option>
+                <option value="KEPALA_GUDANG">Kepala Gudang</option>
+                <option value="STAF_GUDANG">Staf Gudang</option>
+              </select>
+            </div>
 
-            <div className="mb-5 flex h-8 items-center gap-2 rounded-sm bg-field px-3 focus-within:ring-1 focus-within:ring-brand">
-              <LockKeyhole size={14} className="shrink-0" />
-
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                placeholder="Masukkan kata sandi"
-                className="min-w-0 flex-1 bg-transparent text-[10px] outline-none placeholder:text-slate-400"
-                required
-              />
-
+            {/* Remember me */}
+            <div className="flex items-center justify-between">
+              <label className="flex cursor-pointer items-center gap-2.5 select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="size-4 rounded accent-[#0037B0]"
+                />
+                <span className="text-[13.5px] text-[#374151]">Ingat saya</span>
+              </label>
               <button
                 type="button"
-                aria-label="Tampilkan atau sembunyikan kata sandi"
-                className="shrink-0 text-ink"
-                onClick={(event) => {
-                  const input = document.getElementById('password')
-                  const visible = input.type === 'password'
-
-                  input.type = visible ? 'text' : 'password'
-                  event.currentTarget.setAttribute(
-                    'aria-pressed',
-                    String(visible),
-                  )
-                }}
+                onClick={() => alert('Hubungi Administrator IT: admin@gudangwh01.com')}
+                className="text-[13.5px] font-medium text-[#0037B0] hover:underline"
               >
-                <Eye size={15} />
+                Lupa kata sandi?
               </button>
             </div>
 
-            {/* Remember Me */}
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <label className="flex items-center gap-2 text-[9px] text-muted-dark">
-                <input
-                  type="checkbox"
-                  name="remember"
-                  className="size-3 accent-brand"
-                />
-
-                Ingat saya di perangkat ini
-              </label>
-
-              <a
-                href="#bantuan"
-                className="text-[9px] text-brand hover:underline"
-              >
-                Bantuan Cepat
-              </a>
-            </div>
-
-            {errorMessage && (
-              <p
-                role="alert"
-                className="mb-4 rounded-sm bg-red-50 px-3 py-2 text-[9px] text-red-700"
-              >
-                {errorMessage}
-              </p>
-            )}
-
-            {/* Login Button */}
+            {/* Submit */}
             <button
               type="submit"
-              disabled={isLoading}
-              className="flex h-9 w-full items-center justify-center gap-2 rounded bg-brand-hover text-[10px] font-medium text-white transition hover:bg-brand"
+              disabled={loading}
+              className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#0037B0] text-[14px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:opacity-60"
             >
-              {isLoading ? 'Memeriksa akun...' : 'Masuk ke Dashboard'}
-              <ArrowRightToLine size={14} />
+              {loading ? (
+                <>
+                  <span className="size-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  Memverifikasi…
+                </>
+              ) : (
+                <>
+                  Masuk ke Dashboard
+                  <ArrowRight size={16} />
+                </>
+              )}
             </button>
           </form>
-        </div>
 
-        {/* Footer Card */}
-        <div className="bg-[#F8F9FF] px-4 py-4 text-center">
-          <p className="text-[9px] text-muted-dark">
-            Lupa kata sandi?{' '}
-            <a
-              href="#administrator"
-              className="text-brand hover:underline"
-            >
-              Hubungi Administrator
-            </a>
+          <p className="mt-6 text-center text-[12.5px] text-[#6B7280]">
+            Sistem Logistik Sentral WH-01 · Seluruh hak cipta dilindungi
           </p>
-
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-[8px] text-muted">
-            <ShieldCheck size={12} className="text-green" />
-            Keamanan Terenkripsi SSL 256-Bit
-            <span>• NODE-01 AKTIF</span>
-          </div>
         </div>
-      </section>
-
-      {/* Footer Page */}
-      <footer className="absolute bottom-4 left-6 right-6 flex flex-wrap justify-between gap-3 text-[8px]">
-        <span className="text-muted">
-          VER 2.4.0-PROD · Hak Cipta © 2025 Gudang Minimalis
-        </span>
-
-        <Link to="/login" className="text-ink">
-          Dukungan IT
-        </Link>
-      </footer>
-    </main>
+      </div>
+    </div>
   )
 }
