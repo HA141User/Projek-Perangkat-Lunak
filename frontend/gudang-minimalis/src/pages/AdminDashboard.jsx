@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import {
   UserPlus,
@@ -14,7 +15,8 @@ import {
 import AppShell from '../components/AppShell'
 import Badge from '../components/ui/Badge'
 import { Card, CardHeader, CardBody } from '../components/ui/Card'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { downloadCSV, fileStamp } from '../lib/csv'
 
 const menu = [
   { label: 'Beranda', to: '/admin' },
@@ -54,52 +56,67 @@ const shortcuts = [
   },
 ]
 
-const activities = [
-  {
-    code: 'USER_CREATE',
-    title: 'Admin mendaftarkan pengguna baru: Siti Aminah (Staf)',
-    time: '10 mnt lalu',
-    description:
-      'Menetapkan peran Staf Gudang Lapangan dengan akses scanning Opname khusus Zona A.',
-    actor: 'Hendrawan Putra (Kepala Gudang)',
-    meta: 'IP: 192.168.1.104 · 14:22:10 WIB',
-  },
-  {
-    code: 'SYSTEM_AUTO',
-    title: 'Sistem mengirimkan Laporan Otomatis Mingguan',
-    time: '2 jam lalu',
-    description:
-      'Rekap inventaris dan mutasi stok mingguan berhasil didistribusikan ke 3 penerima operasional (Format PDF & XLSX).',
-    actor: 'Daemon Scheduler WH-01',
-    meta: 'Trigger: Cronjob Weekly · 12:00:00 WIB',
-  },
-  {
-    code: 'UPDATE_MASTER',
-    title: 'Pembaruan batas minimum stok: Kabel UTP Cat6',
-    time: 'Kemarin',
-    description:
-      'Ambang batas peringatan stok kritis disesuaikan dari 5 unit menjadi 8 unit sesuai rekomendasi buffer logistik Q4.',
-    actor: 'Hendrawan Putra (Kepala Gudang)',
-    meta: 'SKU: CBL-CAT6-100M · 16:45:18 WIB',
-  },
-  {
-    code: 'AUDIT_SUBMIT',
-    title: 'Staf Budi Santoso menyelesaikan input Opname RAK A-12',
-    time: 'Kemarin',
-    description:
-      'Total 14 item fisik diverifikasi melalui handheld scanner. Berkas saat ini menunggu verifikasi persetujuan Kepala Gudang.',
-    actor: 'Budi Santoso (Staf Gudang)',
-    meta: '[ZONE A] 01-12-RACK-C · 11:39:42 WIB',
-  },
-]
-
 export default function AdminDashboard() {
   const navigate = useNavigate()
   const { user } = getAuth()
+  const [activities, setActivities] = useState([])
+  const [totalLogCount, setTotalLogCount] = useState(0)
+  const [loading, setLoading] = useState(true)
+
+  // Ambil ringkasan dashboard & log audit terbaru murni dari API
+  useEffect(() => {
+    let active = true
+    async function loadDashboard() {
+      setLoading(true)
+      try {
+        const [, logsRes] = await Promise.all([
+          apiFetch('/api/dashboard/'),
+          apiFetch('/api/audit-logs'),
+        ])
+        if (active && logsRes.ok) {
+          const payload = await logsRes.json().catch(() => null)
+          const list = unwrapList(payload)
+          setTotalLogCount(payload?.total ?? payload?.count ?? list.length)
+          setActivities(
+            list.slice(0, 6).map((l) => ({
+              code: l.kode ?? l.aksi ?? l.action ?? 'SYSTEM_AUTO',
+              title: l.judul ?? l.title ?? l.keterangan ?? 'Aktivitas Sistem WH-01',
+              time: l.waktu ?? l.created_at ?? 'Baru saja',
+              description: l.keterangan ?? l.deskripsi ?? l.description ?? '',
+              actor: l.aktor ?? l.user_nama ?? l.user?.nama ?? 'Sistem WH-01',
+              meta: `IP: ${l.ip ?? l.ip_address ?? '-'} · ${l.entitas ?? l.target ?? 'WH-01'}`,
+            }))
+          )
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadDashboard()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() {
     clearAuth()
     navigate('/login')
+  }
+
+  function handleDownloadAudit() {
+    downloadCSV(
+      `arsip-audit-wh01-${fileStamp()}.csv`,
+      ['KODE', 'JUDUL', 'WAKTU', 'AKTOR', 'DETAIL', 'KETERANGAN'],
+      activities.map((a) => [a.code, a.title, a.time, a.actor, a.meta, a.description]),
+    )
+  }
+
+  function handleDownloadTemplate() {
+    downloadCSV(
+      `template-impor-inventaris-wh01-${fileStamp()}.csv`,
+      ['SKU', 'NAMA_BARANG', 'KATEGORI', 'KODE_RAK', 'SATUAN', 'STOK_AWAL', 'MIN_STOK'],
+      []
+    )
   }
 
   return (
@@ -114,7 +131,7 @@ export default function AdminDashboard() {
         <h2 className="text-[20px] font-semibold text-[#111827]">Dashboard Admin</h2>
         <p className="mt-1 text-[14px] text-[#6B7280]">
           Selamat datang, {user?.name || 'Admin'}. Berikut ringkasan status operasional real-time
-          dan aktivitas pengguna terkini.
+          dan aktivitas pengguna terkini dari server backend.
         </p>
       </div>
 
@@ -162,13 +179,14 @@ export default function AdminDashboard() {
                 Unduh formulir template spreadsheet untuk mengunggah ratusan SKU atau mapping
                 lokasi rak secara instan.
               </p>
-              <a
-                href="#template-impor"
-                className="mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#0037B0] hover:underline"
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                className="mt-2 inline-flex cursor-pointer items-center gap-1.5 text-[13px] font-medium text-[#0037B0] hover:underline"
               >
                 <Download size={13} />
                 Unduh Template XLSX
-              </a>
+              </button>
             </div>
           </CardBody>
         </Card>
@@ -188,41 +206,56 @@ export default function AdminDashboard() {
             }
           />
           <CardBody className="flex flex-col gap-3">
-            {activities.map((item) => (
-              <article
-                key={item.code}
-                className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] p-4"
-              >
-                <div className="flex flex-wrap items-start gap-2">
-                  <Badge variant="info">{item.code}</Badge>
-                  <h4 className="min-w-0 flex-1 text-[14px] font-semibold text-[#111827] leading-snug">
-                    {item.title}
-                  </h4>
-                  <time className="shrink-0 text-[12px] text-[#6B7280]">{item.time}</time>
-                </div>
+            {loading ? (
+              <p className="py-8 text-center text-[13.5px] text-[#6B7280]">
+                Memuat log aktivitas dari server...
+              </p>
+            ) : activities.length === 0 ? (
+              <p className="py-8 text-center text-[13.5px] text-[#6B7280]">
+                Belum ada catatan log aktivitas di database.
+              </p>
+            ) : (
+              activities.map((item, idx) => (
+                <article
+                  key={`${item.code}-${idx}`}
+                  className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] p-4"
+                >
+                  <div className="flex flex-wrap items-start gap-2">
+                    <Badge variant="info">{item.code}</Badge>
+                    <h4 className="min-w-0 flex-1 text-[14px] font-semibold text-[#111827] leading-snug">
+                      {item.title}
+                    </h4>
+                    <time className="shrink-0 text-[12px] text-[#6B7280]">{item.time}</time>
+                  </div>
 
-                <p className="mt-2 text-[13px] text-[#6B7280] leading-relaxed">
-                  {item.description}
-                </p>
+                  <p className="mt-2 text-[13px] text-[#6B7280] leading-relaxed">
+                    {item.description}
+                  </p>
 
-                <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-[#6B7280]">
-                  <span className="inline-flex items-center gap-1.5">
-                    <ShieldCheck size={12} />
-                    {item.actor}
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <Clock3 size={12} />
-                    {item.meta}
-                  </span>
-                </div>
-              </article>
-            ))}
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-[#6B7280]">
+                    <span className="inline-flex items-center gap-1.5">
+                      <ShieldCheck size={12} />
+                      {item.actor}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock3 size={12} />
+                      {item.meta}
+                    </span>
+                  </div>
+                </article>
+              ))
+            )}
 
             <div className="flex items-center justify-between pt-1 text-[12px] text-[#6B7280]">
-              <span>Menampilkan 4 dari 1.289 baris log</span>
-              <a href="#arsip-audit" className="font-medium text-[#0037B0] hover:underline">
+              <span>Menampilkan {activities.length} dari {totalLogCount.toLocaleString('id-ID')} baris log</span>
+              <button
+                type="button"
+                onClick={handleDownloadAudit}
+                className="inline-flex cursor-pointer items-center gap-1.5 font-medium text-[#0037B0] hover:underline"
+              >
+                <Download size={13} />
                 Unduh Arsip Audit .CSV
-              </a>
+              </button>
             </div>
           </CardBody>
         </Card>

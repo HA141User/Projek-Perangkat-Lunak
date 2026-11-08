@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { Download, Calendar, Filter, FileText, FileSpreadsheet, CheckCircle2 } from 'lucide-react'
+import { Calendar, Filter, FileText, FileSpreadsheet, CheckCircle2 } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import { KpiCard } from '../components/ui/Card'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { downloadCSV, fileStamp } from '../lib/csv'
 
 const MENU_KEPALA = [
   { to: '/kepala-gudang', label: 'Beranda' },
@@ -34,20 +35,30 @@ const MENU_STAF = [
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const DUMMY_MUTASI = [
-  { id: 1, waktu: '29 Okt 2026, 09:12', barang: 'Kabel UTP Cat6 100m', sku: 'CBL-CAT6-100M', rak: 'A-01', tipe: 'MASUK', jumlah: 24, staf: 'Budi Santoso', sebelum: 18, sesudah: 42 },
-  { id: 2, waktu: '29 Okt 2026, 09:02', barang: 'Lakban Bening Heavy Duty', sku: 'LKB-HD-050', rak: 'B-02', tipe: 'KELUAR', jumlah: 6, staf: 'Siti Rahayu', sebelum: 10, sesudah: 4 },
-  { id: 3, waktu: '28 Okt 2026, 16:30', barang: 'Switch Hub 16-Port Gigabit', sku: 'SWT-GB-016', rak: 'A-02', tipe: 'KELUAR', jumlah: 2, staf: 'Ahmad Fauzi', sebelum: 5, sesudah: 3 },
-  { id: 4, waktu: '28 Okt 2026, 14:15', barang: 'Kertas Thermal Stiker 100x150', sku: 'KRT-TH-150', rak: 'C-01', tipe: 'MASUK', jumlah: 50, staf: 'Dewi Lestari', sebelum: 45, sesudah: 95 },
-  { id: 5, waktu: '28 Okt 2026, 11:30', barang: 'Kardus Double Wall A3', sku: 'KRD-DW-A03', rak: 'B-01', tipe: 'OPNAME', jumlah: 5, staf: 'Budi Santoso', sebelum: 115, sesudah: 120 },
-  { id: 6, waktu: '28 Okt 2026, 10:20', barang: 'Rompi Keselamatan High-Vis', sku: 'RMP-SF-HIV', rak: 'D-01', tipe: 'MASUK', jumlah: 10, staf: 'Ahmad Fauzi', sebelum: 12, sesudah: 22 },
-  { id: 7, waktu: '28 Okt 2026, 08:45', barang: 'Sarung Tangan Karet Grip', sku: 'GLV-SF-GRP', rak: 'D-02', tipe: 'KELUAR', jumlah: 8, staf: 'Siti Rahayu', sebelum: 10, sesudah: 2 },
-]
-
 const TIPE_BADGE = {
   MASUK: 'success',
   KELUAR: 'danger',
   OPNAME: 'info',
+}
+
+function mapApiTx(tx, idx = 0) {
+  const rawTipe = String(tx.tipe ?? tx.jenis_transaksi ?? tx.type ?? 'MASUK').toUpperCase()
+  const tipe = rawTipe === 'IN' ? 'MASUK' : rawTipe === 'OUT' ? 'KELUAR' : rawTipe
+  const jumlah = Number(tx.jumlah ?? tx.kuantitas ?? tx.quantity ?? 0)
+  const sebelum = Number(tx.sebelum ?? tx.stok_sebelum ?? 0)
+  const sesudah = Number(tx.sesudah ?? tx.stok_sesudah ?? (tipe === 'MASUK' ? sebelum + jumlah : Math.max(0, sebelum - jumlah)))
+  return {
+    id: tx.id_transaksi ?? tx.id ?? idx + 1,
+    waktu: tx.waktu ?? tx.created_at ?? tx.tanggal ?? '-',
+    barang: tx.barang ?? tx.nama_barang ?? tx.item?.nama ?? tx.item?.nama_barang ?? '-',
+    sku: tx.sku ?? tx.kode_barang ?? tx.item?.sku ?? tx.item?.kode_barang ?? '-',
+    rak: tx.rak ?? tx.kode_lokasi ?? tx.item?.kode_lokasi ?? '-',
+    tipe,
+    jumlah,
+    staf: tx.staf ?? tx.user_nama ?? tx.user?.nama ?? tx.operator ?? '-',
+    sebelum,
+    sesudah,
+  }
 }
 
 export default function LaporanInventaris() {
@@ -56,11 +67,38 @@ export default function LaporanInventaris() {
   const role = user?.role || 'KEPALA_GUDANG'
   const menuItems = role === 'ADMIN' ? MENU_ADMIN : role === 'STAF_GUDANG' ? MENU_STAF : MENU_KEPALA
 
-  const [dari, setDari] = useState('2026-10-01')
-  const [sampai, setSampai] = useState('2026-10-29')
+  const [dari, setDari] = useState('')
+  const [sampai, setSampai] = useState('')
   const [tipeFilter, setTipeFilter] = useState('semua')
-  const [rows] = useState(DUMMY_MUTASI)
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
   const [snackbar, setSnackbar] = useState('')
+
+  // Ambil riwayat mutasi/laporan murni dari GET /api/reports/mutasi atau GET /api/transactions/
+  useEffect(() => {
+    let active = true
+    async function loadReports() {
+      setLoading(true)
+      try {
+        const qs = new URLSearchParams()
+        if (dari) qs.set('dari', dari)
+        if (sampai) qs.set('sampai', sampai)
+        const queryStr = qs.toString() ? `?${qs.toString()}` : ''
+        const res = await apiFetch(`/api/reports/mutasi${queryStr}`)
+        const finalRes = res.ok ? res : await apiFetch(`/api/transactions/${queryStr}`)
+        if (active && finalRes.ok) {
+          const list = unwrapList(await finalRes.json().catch(() => null))
+          setRows(list.map(mapApiTx))
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadReports()
+    return () => { active = false }
+  }, [dari, sampai])
 
   function handleLogout() {
     clearAuth()
@@ -72,18 +110,21 @@ export default function LaporanInventaris() {
     setTimeout(() => setSnackbar(''), 3500)
   }
 
-  function handleExport(format) {
+  async function handleExport(format) {
     showSnack(`Mengunduh Laporan Mutasi (${format.toUpperCase()})...`)
-    const header = 'WAKTU,BARANG,SKU,RAK,TIPE,JUMLAH,STAF,SEBELUM,SESUDAH\n'
-    const csvContent = rows
-      .map((r) => `"${r.waktu}","${r.barang}","${r.sku}","${r.rak}","${r.tipe}",${r.jumlah},"${r.staf}",${r.sebelum},${r.sesudah}`)
-      .join('\n')
-    const blob = new Blob([header + csvContent], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `laporan-inventaris-wh01.${format === 'pdf' ? 'pdf' : 'csv'}`
-    a.click()
+    try {
+      const qs = new URLSearchParams({ format })
+      if (dari) qs.set('dari', dari)
+      if (sampai) qs.set('sampai', sampai)
+      await apiFetch(`/api/reports/mutasi/export?${qs.toString()}`)
+    } catch {
+      /* ignore */
+    }
+    downloadCSV(
+      `laporan-inventaris-wh01-${fileStamp()}.${format === 'pdf' ? 'pdf' : 'csv'}`,
+      ['WAKTU', 'BARANG', 'SKU', 'RAK', 'TIPE', 'JUMLAH', 'STAF', 'SEBELUM', 'SESUDAH'],
+      filtered.map((r) => [r.waktu, r.barang, r.sku, r.rak, r.tipe, r.jumlah, r.staf, r.sebelum, r.sesudah]),
+    )
   }
 
   const filtered = rows.filter((r) => tipeFilter === 'semua' || r.tipe === tipeFilter)
@@ -188,32 +229,39 @@ export default function LaporanInventaris() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E5E7EB]">
-              {filtered.map((r) => (
-                <tr key={r.id} className="hover:bg-[#F9FAFB] transition-colors">
-                  <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.waktu}</td>
-                  <td className="px-4 py-3">
-                    <span className="block text-[13.5px] font-medium text-[#111827]">{r.barang}</span>
-                    <span className="text-[12px] text-[#0037B0]">{r.sku}</span>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#374151]">{r.rak}</td>
-                  <td className="px-4 py-3 text-center">
-                    <Badge variant={TIPE_BADGE[r.tipe] || 'neutral'}>{r.tipe}</Badge>
-                  </td>
-                  <td className="px-4 py-3 text-right text-[13.5px] font-semibold text-[#111827]">
-                    {r.tipe === 'MASUK' ? `+${r.jumlah}` : r.tipe === 'KELUAR' ? `−${r.jumlah}` : r.jumlah} unit
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-[#374151]">{r.staf}</td>
-                  <td className="px-4 py-3 text-right text-[13px] text-[#6B7280]">
-                    {r.sebelum} → <span className="font-semibold text-[#111827]">{r.sesudah}</span>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
+              {loading ? (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
-                    Tidak ada data mutasi untuk filter yang dipilih.
+                    Memuat data laporan mutasi dari server...
                   </td>
                 </tr>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                    Tidak ada data mutasi yang ditemukan di server.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r) => (
+                  <tr key={r.id} className="hover:bg-[#F9FAFB] transition-colors">
+                    <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.waktu}</td>
+                    <td className="px-4 py-3">
+                      <span className="block text-[13.5px] font-medium text-[#111827]">{r.barang}</span>
+                      <span className="text-[12px] text-[#0037B0]">{r.sku}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#374151]">{r.rak}</td>
+                    <td className="px-4 py-3 text-center">
+                      <Badge variant={TIPE_BADGE[r.tipe] || 'neutral'}>{r.tipe}</Badge>
+                    </td>
+                    <td className="px-4 py-3 text-right text-[13.5px] font-semibold text-[#111827]">
+                      {r.tipe === 'MASUK' ? `+${r.jumlah}` : r.tipe === 'KELUAR' ? `−${r.jumlah}` : r.jumlah} unit
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-[#374151]">{r.staf}</td>
+                    <td className="px-4 py-3 text-right text-[13px] text-[#6B7280]">
+                      {r.sebelum} → <span className="font-semibold text-[#111827]">{r.sesudah}</span>
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

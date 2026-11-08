@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AlertTriangle, CheckCircle, X, Info, ClipboardList } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Modal from '../components/ui/Modal'
 import Btn from '../components/ui/Btn'
 import { Select } from '../components/ui/Form'
-import { getAuth, clearAuth, apiFetch } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -15,19 +15,6 @@ const MENU_STAF = [
   { label: 'Katalog Barang', to: '/staff/barang' },
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
-
-const RAK_LIST = ['A-01', 'A-02', 'A-03', 'B-01', 'B-05', 'B-11', 'C-07', 'D-02']
-
-const RAK_ITEMS = {
-  'A-01': [{ sku: 'ATK-001', nama: 'Kertas HVS A4 80gsm', stokSistem: 120 }],
-  'A-02': [{ sku: 'ATK-002', nama: 'Toner Printer Laser', stokSistem: 34 }],
-  'A-03': [{ sku: 'ATK-003', nama: 'Ballpoint Biru (Lusin)', stokSistem: 8 }],
-  'B-01': [{ sku: 'ATK-004', nama: 'Amplop Coklat Besar', stokSistem: 200 }],
-  'B-05': [{ sku: 'ATK-005', nama: 'Stappler No.10', stokSistem: 3 }],
-  'B-11': [{ sku: 'ATK-006', nama: 'Binder Clip 25mm', stokSistem: 15 }],
-  'C-07': [{ sku: 'ATK-007', nama: 'Spidol Whiteboard Hitam', stokSistem: 22 }],
-  'D-02': [{ sku: 'ATK-008', nama: 'Map Plastik Transparan', stokSistem: 5 }],
-}
 
 function selisihColor(s) {
   if (s === 0) return 'text-emerald-600 font-semibold'
@@ -39,12 +26,42 @@ export default function AuditOpname() {
   const navigate = useNavigate()
   const { user } = getAuth()
 
+  const [rakItemsMap, setRakItemsMap] = useState({})
   const [selectedRak, setSelectedRak] = useState('')
   const [inputs, setInputs] = useState({})
   const [loading, setLoading] = useState(false)
   const [errorBanner, setErrorBanner] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+
+  // Ambil daftar barang per rak murni dari GET /api/items/
+  useEffect(() => {
+    let active = true
+    async function loadItems() {
+      try {
+        const res = await apiFetch('/api/items/')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          const grouped = {}
+          list.forEach((it, idx) => {
+            const rak = String(it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? 'UMUM').replace(/^RAK\s+/i, '')
+            if (!grouped[rak]) grouped[rak] = []
+            grouped[rak].push({
+              id: it.id_barang ?? it.id ?? idx + 1,
+              sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
+              nama: it.nama ?? it.nama_barang ?? '-',
+              stokSistem: Number(it.stok ?? it.stok_saat_ini ?? 0),
+            })
+          })
+          setRakItemsMap(grouped)
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      }
+    }
+    loadItems()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() { clearAuth(); navigate('/login') }
 
@@ -59,16 +76,21 @@ export default function AuditOpname() {
     setInputs((prev) => ({ ...prev, [sku]: { ...prev[sku], [field]: value } }))
   }
 
-  const items = selectedRak ? (RAK_ITEMS[selectedRak] ?? []) : []
+  const rakList = Object.keys(rakItemsMap)
+  const items = selectedRak ? (rakItemsMap[selectedRak] ?? []) : []
 
   function buildPayload() {
     return items.map((item) => {
       const stokFisik = Number(inputs[item.sku]?.stokFisik ?? item.stokSistem)
       return {
+        id_barang: item.id,
+        item_id: item.id,
         sku: item.sku,
         nama: item.nama,
         stokSistem: item.stokSistem,
+        stok_sistem: item.stokSistem,
         stokFisik,
+        stok_fisik: stokFisik,
         selisih: stokFisik - item.stokSistem,
         keterangan: inputs[item.sku]?.keterangan ?? '',
       }
@@ -79,13 +101,27 @@ export default function AuditOpname() {
     setErrorBanner('')
     setLoading(true)
     try {
-      const res = await apiFetch('/api/opname', {
+      const detailsPayload = buildPayload()
+      const res = await apiFetch('/api/opnames/', {
         method: 'POST',
-        body: JSON.stringify({ rak: selectedRak, items: buildPayload(), submittedAt: new Date().toISOString() }),
+        body: JSON.stringify({
+          rak: selectedRak,
+          kode_lokasi: selectedRak,
+          items: detailsPayload,
+          submittedAt: new Date().toISOString(),
+        }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.message || `Error ${res.status}`)
+      }
+      const created = await res.json().catch(() => ({}))
+      const opnameId = created?.data?.id_opname ?? created?.data?.id ?? created?.id
+      if (opnameId) {
+        await apiFetch(`/api/opnames/${opnameId}/details`, {
+          method: 'POST',
+          body: JSON.stringify({ items: detailsPayload, details: detailsPayload }),
+        }).catch(() => {})
       }
       setShowConfirm(false)
       setSubmitted(true)
@@ -144,7 +180,7 @@ export default function AuditOpname() {
 
           <Select value={selectedRak} onChange={handleRakChange}>
             <option value="">— Pilih Rak —</option>
-            {RAK_LIST.map((r) => (
+            {rakList.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </Select>

@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { Download, Upload, ArrowRight } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Badge from '../components/ui/Badge'
 import { Card, CardHeader, CardBody } from '../components/ui/Card'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const menu = [
   { label: 'Beranda', to: '/staff' },
@@ -15,18 +15,43 @@ const menu = [
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const DUMMY_TRANSACTIONS = [
-  { id: 1, waktu: '09:14:02', rak: 'A-03', tipe: 'IN', jumlah: 24 },
-  { id: 2, waktu: '09:02:47', rak: 'B-11', tipe: 'OUT', jumlah: 6 },
-  { id: 3, waktu: '08:55:30', rak: 'C-07', tipe: 'IN', jumlah: 48 },
-  { id: 4, waktu: '08:40:12', rak: 'A-01', tipe: 'OUT', jumlah: 12 },
-  { id: 5, waktu: '08:22:58', rak: 'D-02', tipe: 'IN', jumlah: 100 },
-  { id: 6, waktu: '08:10:35', rak: 'B-05', tipe: 'OUT', jumlah: 3 },
-]
-
 export default function StaffDashboard() {
   const navigate = useNavigate()
   const { user } = getAuth()
+  const [transactions, setTransactions] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  // Ambil riwayat transaksi terbaru murni dari GET /api/transactions/
+  useEffect(() => {
+    let active = true
+    async function loadTransactions() {
+      setLoading(true)
+      try {
+        const res = await apiFetch('/api/transactions/')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          setTransactions(
+            list.slice(0, 8).map((tx, idx) => {
+              const rawTipe = String(tx.tipe ?? tx.jenis_transaksi ?? tx.type ?? 'IN').toUpperCase()
+              return {
+                id: tx.id_transaksi ?? tx.id ?? idx + 1,
+                waktu: tx.waktu ?? tx.created_at ?? '-',
+                rak: tx.rak ?? tx.kode_lokasi ?? tx.item?.kode_lokasi ?? '-',
+                tipe: rawTipe === 'MASUK' || rawTipe === 'IN' ? 'IN' : 'OUT',
+                jumlah: Number(tx.jumlah ?? tx.kuantitas ?? tx.quantity ?? 0),
+              }
+            })
+          )
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadTransactions()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() {
     clearAuth()
@@ -133,27 +158,41 @@ export default function StaffDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {DUMMY_TRANSACTIONS.map((tx) => (
-                  <tr
-                    key={tx.id}
-                    className="border-b border-[#E5E7EB] last:border-0 hover:bg-[#F9FAFB]"
-                  >
-                    <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
-                      {tx.waktu}
-                    </td>
-                    <td className="px-5 py-3 font-mono text-[13.5px] font-medium text-[#111827]">
-                      {tx.rak}
-                    </td>
-                    <td className="px-5 py-3">
-                      <Badge variant={tx.tipe === 'IN' ? 'success' : 'danger'}>
-                        {tx.tipe === 'IN' ? 'Masuk' : 'Keluar'}
-                      </Badge>
-                    </td>
-                    <td className="px-5 py-3 text-right font-mono text-[13.5px] font-semibold text-[#111827]">
-                      {tx.jumlah.toLocaleString('id-ID')}
+                {loading ? (
+                  <tr>
+                    <td colSpan={4} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Memuat riwayat transaksi dari server...
                     </td>
                   </tr>
-                ))}
+                ) : transactions.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Belum ada transaksi tercatat di server.
+                    </td>
+                  </tr>
+                ) : (
+                  transactions.map((tx) => (
+                    <tr
+                      key={tx.id}
+                      className="border-b border-[#E5E7EB] last:border-0 hover:bg-[#F9FAFB]"
+                    >
+                      <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
+                        {tx.waktu}
+                      </td>
+                      <td className="px-5 py-3 font-mono text-[13.5px] font-medium text-[#111827]">
+                        {tx.rak}
+                      </td>
+                      <td className="px-5 py-3">
+                        <Badge variant={tx.tipe === 'IN' ? 'success' : 'danger'}>
+                          {tx.tipe === 'IN' ? 'Masuk' : 'Keluar'}
+                        </Badge>
+                      </td>
+                      <td className="px-5 py-3 text-right font-mono text-[13.5px] font-semibold text-[#111827]">
+                        {tx.jumlah.toLocaleString('id-ID')}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

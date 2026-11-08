@@ -1,13 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { PackagePlus, Search, Filter, Edit2, Trash2, Package } from 'lucide-react'
+import { PackagePlus, Search, Filter, Edit2, Trash2, Package, CheckCircle2, Lock, RefreshCw } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -20,34 +20,204 @@ const MENU_ADMIN = [
   { label: 'Log Aktivitas', to: '/admin/log' },
 ]
 
-const INITIAL_BARANG = [
-  { id: 1, sku: 'BRG-ELK-001', nama: 'Kabel UTP Cat6 305m', kategori: 'Elektronik', rak: 'RAK A-01', satuan: 'Roll', stok: 18, minStok: 5, status: 'Aman' },
-  { id: 2, sku: 'BRG-ELK-002', nama: 'Switch Hub 16-Port Gigabit', kategori: 'Elektronik', rak: 'RAK A-02', satuan: 'Unit', stok: 3, minStok: 5, status: 'Kritis' },
-  { id: 3, sku: 'BRG-LOG-003', nama: 'Kardus Double Wall A3', kategori: 'Logistik', rak: 'RAK B-01', satuan: 'Pcs', stok: 120, minStok: 50, status: 'Aman' },
-  { id: 4, sku: 'BRG-LOG-004', nama: 'Lakban Bening Heavy Duty', kategori: 'Logistik', rak: 'RAK B-02', satuan: 'Roll', stok: 4, minStok: 10, status: 'Kritis' },
-  { id: 5, sku: 'BRG-ATK-005', nama: 'Kertas Thermal Stiker 100x150', kategori: 'ATK', rak: 'RAK C-01', satuan: 'Roll', stok: 45, minStok: 15, status: 'Aman' },
-  { id: 6, sku: 'BRG-ATK-006', nama: 'Barcode Scanner Handheld 2D', kategori: 'ATK', rak: 'RAK C-02', satuan: 'Unit', stok: 0, minStok: 2, status: 'Habis' },
-  { id: 7, sku: 'BRG-SAF-007', nama: 'Rompi Keselamatan High-Vis', kategori: 'Safety', rak: 'RAK D-01', satuan: 'Pcs', stok: 22, minStok: 10, status: 'Aman' },
-  { id: 8, sku: 'BRG-SAF-008', nama: 'Sarung Tangan Karet Grip', kategori: 'Safety', rak: 'RAK D-02', satuan: 'Pasang', stok: 2, minStok: 12, status: 'Kritis' },
+// ─── Master referensi opsi form ────────────────────────────────────────────
+const DEFAULT_KATEGORI = [
+  { id: 1, value: 'Elektronik', prefix: 'ELK' },
+  { id: 2, value: 'Logistik', prefix: 'LOG' },
+  { id: 3, value: 'ATK', prefix: 'ATK' },
+  { id: 4, value: 'Safety', prefix: 'SAF' },
 ]
+const SATUAN = ['Pcs', 'Unit', 'Roll', 'Dus', 'Box', 'Pack', 'Pasang', 'Set', 'Lembar', 'Kg', 'Meter', 'Liter']
+const DEFAULT_RAK = ['RAK A-01', 'RAK A-02', 'RAK B-01', 'RAK B-02', 'RAK C-01', 'RAK C-02', 'RAK D-01', 'RAK D-02']
+
+// ─── Aturan validasi ───────────────────────────────────────────────────────
+const SKU_REGEX = /^[A-Z0-9]+(-[A-Z0-9]+)*$/ // huruf besar/angka, dipisah tanda "-"
+const SKU_MIN = 3
+const SKU_MAX = 30
+const NAMA_MIN = 3
+const NAMA_MAX = 100
+const QTY_MAX = 1_000_000
+
+/** Normalisasi untuk perbandingan duplikat: trim, rapikan spasi ganda, abaikan huruf besar/kecil */
+const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+
+function hitungStatus(stok, minStok) {
+  if (stok === 0) return 'Habis'
+  if (stok <= minStok) return 'Kritis'
+  return 'Aman'
+}
+
+function statusVariant(status) {
+  if (status === 'Aman') return 'success'
+  if (status === 'Kritis') return 'warning'
+  return 'danger'
+}
+
+function mapApiItem(it, idx = 0) {
+  const stok = Number(it.stok ?? it.stok_saat_ini ?? it.stock ?? 0)
+  const minStok = Number(it.minStok ?? it.batas_stok_minimum ?? it.min_stock ?? 5)
+  const rawRak = it.rak ?? it.kode_lokasi ?? it.lokasi_nama ?? it.location?.kode ?? 'RAK A-01'
+  const rak = String(rawRak).toUpperCase().startsWith('RAK') ? rawRak : `RAK ${rawRak}`
+  return {
+    id: it.id_barang ?? it.id ?? idx + 1,
+    sku: it.sku ?? it.kode_barang ?? it.kode ?? `BRG-00${idx + 1}`,
+    nama: it.nama ?? it.nama_barang ?? it.name ?? 'Barang Gudang',
+    kategori: it.kategori ?? it.kategori_nama ?? it.category?.nama ?? 'Elektronik',
+    rak,
+    satuan: it.satuan ?? it.unit ?? 'Pcs',
+    stok,
+    minStok,
+    status: hitungStatus(stok, minStok),
+  }
+}
+
+/** SKU otomatis: BRG-{PREFIX KATEGORI}-{nomor urut berikutnya 3 digit} */
+function generateSku(kategori, items, kategoriList = DEFAULT_KATEGORI) {
+  const prefix =
+    kategoriList.find((k) => k.value === kategori)?.prefix ??
+    kategori.slice(0, 3).toUpperCase() ??
+    'GEN'
+  const maxNo = items.reduce((max, i) => {
+    const m = /-(\d+)$/.exec(i.sku)
+    return m ? Math.max(max, Number(m[1])) : max
+  }, 0)
+  let no = maxNo + 1
+  let sku
+  do {
+    sku = `BRG-${prefix}-${String(no).padStart(3, '0')}`
+    no += 1
+  } while (items.some((i) => norm(i.sku) === norm(sku)))
+  return sku
+}
+
+function validateQty(raw, label, { min = 0 } = {}) {
+  if (raw === '' || raw === null || raw === undefined) return `${label} wajib diisi.`
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return `${label} harus berupa angka.`
+  if (!Number.isInteger(n)) return `${label} harus bilangan bulat (tanpa desimal).`
+  if (n < min) return `${label} minimal ${min}.`
+  if (n > QTY_MAX) return `${label} maksimal ${QTY_MAX.toLocaleString('id-ID')}.`
+  return null
+}
+
+function validateBarang(form, items, editingId, kategoriList, rakList) {
+  const errors = {}
+  const others = items.filter((i) => i.id !== editingId)
+  const sku = form.sku.trim().toUpperCase()
+  const nama = form.nama.trim().replace(/\s+/g, ' ')
+
+  // SKU
+  if (!sku) errors.sku = 'Kode SKU wajib diisi.'
+  else if (sku.length < SKU_MIN || sku.length > SKU_MAX) errors.sku = `Kode SKU harus ${SKU_MIN}–${SKU_MAX} karakter.`
+  else if (!SKU_REGEX.test(sku)) errors.sku = 'Hanya huruf, angka, dan tanda "-" (contoh: BRG-ELK-009).'
+  else {
+    const dup = others.find((i) => norm(i.sku) === norm(sku))
+    if (dup) errors.sku = `Kode SKU sudah dipakai oleh "${dup.nama}".`
+  }
+
+  // Nama barang
+  if (!nama) errors.nama = 'Nama barang wajib diisi.'
+  else if (nama.length < NAMA_MIN) errors.nama = `Nama barang minimal ${NAMA_MIN} karakter.`
+  else if (nama.length > NAMA_MAX) errors.nama = `Nama barang maksimal ${NAMA_MAX} karakter.`
+  else {
+    const dup = others.find((i) => norm(i.nama) === norm(nama))
+    if (dup) errors.nama = `Nama barang sudah terdaftar dengan SKU ${dup.sku}.`
+  }
+
+  // Referensi
+  if (kategoriList.length > 0 && !kategoriList.some((k) => k.value === form.kategori)) errors.kategori = 'Pilih kategori yang valid.'
+  if (!SATUAN.includes(form.satuan)) errors.satuan = 'Pilih satuan yang valid.'
+  if (rakList.length > 0 && !rakList.includes(form.rak)) errors.rak = 'Pilih rak yang valid.'
+
+  // Kuantitas
+  const minErr = validateQty(form.minStok, 'Batas minimum stok', { min: 1 })
+  if (minErr) errors.minStok = minErr
+  if (!editingId) {
+    const stokErr = validateQty(form.stok, 'Stok awal')
+    if (stokErr) errors.stok = stokErr
+  }
+
+  return errors
+}
+
+const EMPTY_FORM = { sku: '', nama: '', kategori: 'Elektronik', rak: DEFAULT_RAK[0], satuan: 'Pcs', stok: '0', minStok: '5' }
+const errCls = 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
 
 export default function AdminBarang() {
   const navigate = useNavigate()
   const { user } = getAuth()
-  const [items, setItems] = useState(INITIAL_BARANG)
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [kategoriList, setKategoriList] = useState(DEFAULT_KATEGORI)
+  const [rakList, setRakList] = useState(DEFAULT_RAK)
   const [search, setSearch] = useState('')
   const [selectedKategori, setSelectedKategori] = useState('Semua')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingItem, setEditingItem] = useState(null)
-  const [formData, setFormData] = useState({
-    sku: '',
-    nama: '',
-    kategori: 'Elektronik',
-    rak: 'RAK A-01',
-    satuan: 'Pcs',
-    stok: 0,
-    minStok: 5,
-  })
+  const [formData, setFormData] = useState(EMPTY_FORM)
+  const [skuAuto, setSkuAuto] = useState(true)
+  const [touched, setTouched] = useState({})
+  const [submitted, setSubmitted] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState('')
+
+  // Ambil master barang, kategori, dan lokasi murni dari API backend
+  useEffect(() => {
+    let active = true
+    async function loadMasterData() {
+      setLoading(true)
+      try {
+        const [itemsRes, catRes, locRes] = await Promise.all([
+          apiFetch('/api/items/'),
+          apiFetch('/api/categories/'),
+          apiFetch('/api/locations/'),
+        ])
+
+        if (active && itemsRes.ok) {
+          const list = unwrapList(await itemsRes.json().catch(() => null))
+          if (Array.isArray(list)) {
+            setItems(list.map(mapApiItem))
+          }
+        }
+
+        if (active && catRes.ok) {
+          const cats = unwrapList(await catRes.json().catch(() => null))
+          if (Array.isArray(cats) && cats.length > 0) {
+            const mappedCats = cats
+              .map((c, idx) => {
+                const name = c.nama_kategori ?? c.nama ?? c.name ?? c.value
+                if (!name) return null
+                return {
+                  id: c.id_kategori ?? c.id ?? idx + 1,
+                  value: name,
+                  prefix: String(c.kode ?? name).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'BRG',
+                }
+              })
+              .filter(Boolean)
+            if (mappedCats.length > 0) setKategoriList(mappedCats)
+          }
+        }
+
+        if (active && locRes.ok) {
+          const locs = unwrapList(await locRes.json().catch(() => null))
+          if (Array.isArray(locs) && locs.length > 0) {
+            const mappedRaks = locs
+              .map((l) => {
+                const k = l.kode_lokasi ?? l.kode ?? l.nama_lokasi ?? l.name
+                if (!k) return null
+                return String(k).toUpperCase().startsWith('RAK') ? String(k).toUpperCase() : `RAK ${String(k).toUpperCase()}`
+              })
+              .filter(Boolean)
+            if (mappedRaks.length > 0) setRakList(Array.from(new Set(mappedRaks)))
+          }
+        }
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadMasterData()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() {
     clearAuth()
@@ -55,64 +225,154 @@ export default function AdminBarang() {
   }
 
   const filteredItems = items.filter((item) => {
+    const q = search.toLowerCase()
     const matchSearch =
-      item.nama.toLowerCase().includes(search.toLowerCase()) ||
-      item.sku.toLowerCase().includes(search.toLowerCase()) ||
-      item.rak.toLowerCase().includes(search.toLowerCase())
+      item.nama.toLowerCase().includes(q) ||
+      item.sku.toLowerCase().includes(q) ||
+      item.rak.toLowerCase().includes(q)
     const matchKategori = selectedKategori === 'Semua' || item.kategori === selectedKategori
     return matchSearch && matchKategori
   })
 
+  // Validasi dihitung ulang setiap kali form berubah (real-time)
+  const errors = useMemo(
+    () => validateBarang(formData, items, editingItem?.id, kategoriList, rakList),
+    [formData, items, editingItem, kategoriList, rakList],
+  )
+  const isValid = Object.keys(errors).length === 0
+  const showErr = (key) => (submitted || touched[key]) && errors[key]
+
+  // Pratinjau status stok di dalam form
+  const previewStok = editingItem ? editingItem.stok : Number(formData.stok)
+  const previewMin = Number(formData.minStok)
+  const previewStatus =
+    !errors.stok && !errors.minStok ? hitungStatus(previewStok, previewMin) : null
+
+  function showToast(msg) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 4000)
+  }
+
+  function resetFormState() {
+    setTouched({})
+    setSubmitted(false)
+  }
+
   function handleOpenCreate() {
+    const defaultKat = kategoriList[0]?.value || 'Elektronik'
     setEditingItem(null)
+    setSkuAuto(true)
     setFormData({
-      sku: `BRG-${Date.now().toString().slice(-4)}`,
-      nama: '',
-      kategori: 'Elektronik',
-      rak: 'RAK A-01',
-      satuan: 'Pcs',
-      stok: 10,
-      minStok: 5,
+      ...EMPTY_FORM,
+      kategori: defaultKat,
+      rak: rakList[0] || DEFAULT_RAK[0],
+      sku: generateSku(defaultKat, items, kategoriList),
     })
+    resetFormState()
     setIsModalOpen(true)
   }
 
   function handleOpenEdit(item) {
     setEditingItem(item)
-    setFormData({ ...item })
+    setSkuAuto(false)
+    setFormData({ ...item, stok: String(item.stok), minStok: String(item.minStok) })
+    resetFormState()
     setIsModalOpen(true)
   }
 
-  function handleDelete(id) {
-    if (confirm('Yakin ingin menghapus master data barang ini?')) {
-      setItems((prev) => prev.filter((i) => i.id !== id))
-    }
-  }
-
-  function handleSubmit(e) {
-    e.preventDefault()
-    const status = Number(formData.stok) === 0 ? 'Habis' : Number(formData.stok) <= Number(formData.minStok) ? 'Kritis' : 'Aman'
-    if (editingItem) {
-      setItems((prev) =>
-        prev.map((i) => (i.id === editingItem.id ? { ...i, ...formData, stok: Number(formData.stok), minStok: Number(formData.minStok), status } : i))
-      )
-    } else {
-      const newItem = {
-        id: Date.now(),
-        ...formData,
-        stok: Number(formData.stok),
-        minStok: Number(formData.minStok),
-        status,
-      }
-      setItems((prev) => [newItem, ...prev])
-    }
+  function handleClose() {
     setIsModalOpen(false)
   }
 
-  function statusVariant(status) {
-    if (status === 'Aman') return 'success'
-    if (status === 'Kritis') return 'warning'
-    return 'danger'
+  function updateField(key, value) {
+    setFormData((f) => {
+      const next = { ...f, [key]: value }
+      // SKU otomatis mengikuti kategori selama belum diubah manual
+      if (key === 'kategori' && skuAuto && !editingItem) next.sku = generateSku(value, items, kategoriList)
+      return next
+    })
+    setTouched((t) => ({ ...t, [key]: true }))
+  }
+
+  function handleSkuChange(value) {
+    setSkuAuto(false)
+    updateField('sku', value.toUpperCase().replace(/\s+/g, ''))
+  }
+
+  function regenerateSku() {
+    setSkuAuto(true)
+    setFormData((f) => ({ ...f, sku: generateSku(f.kategori, items, kategoriList) }))
+  }
+
+  async function handleDelete(item) {
+    if (!confirm(`Yakin ingin menghapus "${item.nama}" (${item.sku})?\nTindakan ini tidak dapat dibatalkan.`)) return
+    const res = await apiFetch(`/api/items/${item.id}`, { method: 'DELETE' })
+    if (res.ok) {
+      setItems((prev) => prev.filter((i) => i.id !== item.id))
+      showToast(`Barang ${item.sku} berhasil dihapus.`)
+    }
+  }
+
+  async function handleSubmit(e) {
+    e?.preventDefault?.()
+    setSubmitted(true)
+    if (!isValid) return
+
+    const clean = {
+      sku: formData.sku.trim().toUpperCase(),
+      nama: formData.nama.trim().replace(/\s+/g, ' '),
+      kategori: formData.kategori,
+      rak: formData.rak,
+      satuan: formData.satuan,
+      minStok: Number(formData.minStok),
+    }
+
+    const kategoriId = kategoriList.find((k) => k.value === clean.kategori)?.id ?? 1
+    const apiBody = {
+      ...clean,
+      kode_barang: clean.sku,
+      nama_barang: clean.nama,
+      kategori_id: kategoriId,
+      batas_stok_minimum: clean.minStok,
+      min_stock: clean.minStok,
+      stok_saat_ini: editingItem ? editingItem.stok : Number(formData.stok),
+      stok: editingItem ? editingItem.stok : Number(formData.stok),
+    }
+
+    setSaving(true)
+    try {
+      if (editingItem) {
+        await apiFetch(`/api/items/${editingItem.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(apiBody),
+        })
+        if (editingItem.minStok !== clean.minStok) {
+          await apiFetch(`/api/items/${editingItem.id}/min-stock`, {
+            method: 'PATCH',
+            body: JSON.stringify({ batas_stok_minimum: clean.minStok, min_stock: clean.minStok, minStok: clean.minStok }),
+          }).catch(() => {})
+        }
+        setItems((prev) =>
+          prev.map((i) =>
+            i.id === editingItem.id ? { ...i, ...clean, status: hitungStatus(i.stok, clean.minStok) } : i,
+          ),
+        )
+        showToast(`Perubahan ${clean.sku} berhasil disimpan.`)
+      } else {
+        const stok = Number(formData.stok)
+        const res = await apiFetch('/api/items/', {
+          method: 'POST',
+          body: JSON.stringify(apiBody),
+        })
+        const created = await res.json().catch(() => null)
+        const newId = created?.data?.id_barang ?? created?.data?.id ?? created?.id ?? Date.now()
+        setItems((prev) => [{ id: newId, ...clean, stok, status: hitungStatus(stok, clean.minStok) }, ...prev])
+        showToast(`Barang ${clean.sku} – ${clean.nama} berhasil didaftarkan.`)
+      }
+      setIsModalOpen(false)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -127,6 +387,13 @@ export default function AdminBarang() {
         </Btn>
       }
     >
+      {toast && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] text-emerald-800">
+          <CheckCircle2 size={16} />
+          {toast}
+        </div>
+      )}
+
       {/* Search + Filter row */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="flex h-9 flex-1 min-w-[200px] items-center gap-2 rounded-lg border border-[#E5E7EB] bg-white px-3 text-[13.5px] focus-within:border-[#1D4ED8] focus-within:ring-2 focus-within:ring-[#1D4ED8]/20 transition-colors">
@@ -148,10 +415,9 @@ export default function AdminBarang() {
             className="bg-transparent text-[13.5px] text-[#111827] outline-none"
           >
             <option value="Semua">Semua Kategori</option>
-            <option value="Elektronik">Elektronik</option>
-            <option value="Logistik">Logistik</option>
-            <option value="ATK">ATK</option>
-            <option value="Safety">Safety</option>
+            {kategoriList.map((k) => (
+              <option key={k.value} value={k.value}>{k.value}</option>
+            ))}
           </select>
         </div>
       </div>
@@ -173,7 +439,14 @@ export default function AdminBarang() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E5E7EB]">
-              {filteredItems.map((item) => (
+              {loading && (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                    Memuat data barang dari server...
+                  </td>
+                </tr>
+              )}
+              {!loading && filteredItems.map((item) => (
                 <tr key={item.id} className="hover:bg-[#F9FAFB] transition-colors">
                   <td className="px-4 py-3 font-mono text-[13px] font-semibold text-[#0037B0]">{item.sku}</td>
                   <td className="px-4 py-3 text-[13.5px] font-medium text-[#111827]">{item.nama}</td>
@@ -190,15 +463,15 @@ export default function AdminBarang() {
                   <td className="px-4 py-3 text-center">
                     <div className="inline-flex items-center gap-1">
                       <Btn variant="ghost" size="sm" icon={Edit2} onClick={() => handleOpenEdit(item)} />
-                      <Btn variant="danger" size="sm" icon={Trash2} onClick={() => handleDelete(item.id)} />
+                      <Btn variant="danger" size="sm" icon={Trash2} onClick={() => handleDelete(item)} />
                     </div>
                   </td>
                 </tr>
               ))}
-              {filteredItems.length === 0 && (
+              {!loading && filteredItems.length === 0 && (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
-                    Tidak ada barang yang cocok dengan filter pencarian.
+                    Tidak ada data barang dari API.
                   </td>
                 </tr>
               )}
@@ -210,98 +483,159 @@ export default function AdminBarang() {
       {/* Modal Tambah / Edit Barang */}
       <Modal
         open={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={handleClose}
         title={editingItem ? 'Edit Master Barang' : 'Tambah Barang / SKU Baru'}
         subtitle="Lengkapi data informasi inventaris"
         icon={Package}
         footer={
           <>
-            <Btn variant="secondary" onClick={() => setIsModalOpen(false)}>Batal</Btn>
-            <Btn variant="primary" onClick={handleSubmit}>
+            <Btn variant="secondary" onClick={handleClose}>Batal</Btn>
+            <Btn variant="primary" loading={saving} onClick={handleSubmit} disabled={submitted && !isValid}>
               {editingItem ? 'Simpan Perubahan' : 'Daftarkan Barang'}
             </Btn>
           </>
         }
       >
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} noValidate>
+          {submitted && !isValid && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
+              Masih ada {Object.keys(errors).length} isian yang belum sesuai. Periksa kolom bertanda merah.
+            </div>
+          )}
+
           <div className="grid gap-4">
-            <Field label="Kode SKU / Barcode" required>
-              <Input
-                type="text"
-                required
-                value={formData.sku}
-                onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-              />
-            </Field>
-
-            <Field label="Nama Barang" required>
-              <Input
-                type="text"
-                required
-                placeholder="Contoh: Kabel UTP Cat6 305m"
-                value={formData.nama}
-                onChange={(e) => setFormData({ ...formData, nama: e.target.value })}
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Kategori">
-                <Select
-                  value={formData.kategori}
-                  onChange={(e) => setFormData({ ...formData, kategori: e.target.value })}
-                >
-                  <option value="Elektronik">Elektronik</option>
-                  <option value="Logistik">Logistik</option>
-                  <option value="ATK">ATK</option>
-                  <option value="Safety">Safety</option>
-                </Select>
-              </Field>
-              <Field label="Satuan" required>
+            {/* SKU */}
+            <Field
+              label="Kode SKU / Barcode"
+              required
+              error={showErr('sku')}
+              hint={
+                editingItem
+                  ? 'SKU tidak dapat diubah karena sudah menjadi referensi transaksi & stiker barcode.'
+                  : skuAuto
+                    ? 'Dibuat otomatis berdasarkan kategori. Boleh diganti manual.'
+                    : 'Huruf besar, angka, dan tanda "-". Harus unik.'
+              }
+            >
+              <div className="relative">
                 <Input
                   type="text"
-                  required
-                  placeholder="Pcs / Dus / Roll / Unit"
-                  value={formData.satuan}
-                  onChange={(e) => setFormData({ ...formData, satuan: e.target.value })}
+                  value={formData.sku}
+                  maxLength={SKU_MAX}
+                  readOnly={!!editingItem}
+                  aria-invalid={!!showErr('sku')}
+                  className={`pr-10 font-mono uppercase ${editingItem ? 'bg-[#F3F4F6] text-[#6B7280]' : ''} ${showErr('sku') ? errCls : ''}`}
+                  onChange={(e) => handleSkuChange(e.target.value)}
+                  onBlur={() => setTouched((t) => ({ ...t, sku: true }))}
                 />
+                <span className="absolute inset-y-0 right-0 grid w-9 place-items-center text-[#9CA3AF]">
+                  {editingItem ? (
+                    <Lock size={14} />
+                  ) : (
+                    <button
+                      type="button"
+                      title="Buat ulang SKU otomatis"
+                      onClick={regenerateSku}
+                      className="grid size-7 place-items-center rounded hover:bg-[#F3F4F6] hover:text-[#0037B0]"
+                    >
+                      <RefreshCw size={14} />
+                    </button>
+                  )}
+                </span>
+              </div>
+            </Field>
+
+            {/* Nama */}
+            <Field
+              label="Nama Barang"
+              required
+              error={showErr('nama')}
+              hint={`${formData.nama.trim().length}/${NAMA_MAX} karakter · harus unik`}
+            >
+              <Input
+                type="text"
+                maxLength={NAMA_MAX}
+                placeholder="Contoh: Kabel UTP Cat6 305m"
+                value={formData.nama}
+                aria-invalid={!!showErr('nama')}
+                className={showErr('nama') ? errCls : ''}
+                onChange={(e) => updateField('nama', e.target.value)}
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Kategori" required error={showErr('kategori')}>
+                <Select value={formData.kategori} onChange={(e) => updateField('kategori', e.target.value)}>
+                  {kategoriList.map((k) => (
+                    <option key={k.value} value={k.value}>{k.value}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Satuan" required error={showErr('satuan')}>
+                <Select value={formData.satuan} onChange={(e) => updateField('satuan', e.target.value)}>
+                  {SATUAN.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </Select>
               </Field>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <Field label="Alokasi Rak">
-                <Select
-                  value={formData.rak}
-                  onChange={(e) => setFormData({ ...formData, rak: e.target.value })}
-                >
-                  <option value="RAK A-01">RAK A-01</option>
-                  <option value="RAK A-02">RAK A-02</option>
-                  <option value="RAK B-01">RAK B-01</option>
-                  <option value="RAK B-02">RAK B-02</option>
-                  <option value="RAK C-01">RAK C-01</option>
-                  <option value="RAK D-01">RAK D-01</option>
+              <Field label="Alokasi Rak" required error={showErr('rak')}>
+                <Select value={formData.rak} onChange={(e) => updateField('rak', e.target.value)}>
+                  {rakList.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
                 </Select>
               </Field>
-              <Field label="Batas Minimum Stok" required>
+              <Field label="Batas Minimum Stok" required error={showErr('minStok')} hint="Peringatan 'Kritis' saat stok ≤ nilai ini">
                 <Input
                   type="number"
-                  min="0"
-                  required
+                  inputMode="numeric"
+                  min="1"
+                  step="1"
                   value={formData.minStok}
-                  onChange={(e) => setFormData({ ...formData, minStok: e.target.value })}
+                  aria-invalid={!!showErr('minStok')}
+                  className={showErr('minStok') ? errCls : ''}
+                  onKeyDown={(e) => ['e', 'E', '+', '-', '.', ','].includes(e.key) && e.preventDefault()}
+                  onChange={(e) => updateField('minStok', e.target.value)}
                 />
               </Field>
             </div>
 
-            <Field label="Stok Awal" required>
-              <Input
-                type="number"
-                min="0"
-                required
-                value={formData.stok}
-                onChange={(e) => setFormData({ ...formData, stok: e.target.value })}
-              />
-            </Field>
+            <div className="grid grid-cols-2 items-start gap-4">
+              <Field
+                label={editingItem ? 'Stok Saat Ini' : 'Stok Awal'}
+                required={!editingItem}
+                error={showErr('stok')}
+                hint={editingItem ? 'Ubah stok lewat Transaksi Masuk/Keluar atau Stok Opname.' : 'Jumlah fisik saat barang didaftarkan'}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  step="1"
+                  value={formData.stok}
+                  readOnly={!!editingItem}
+                  aria-invalid={!!showErr('stok')}
+                  className={`${editingItem ? 'bg-[#F3F4F6] text-[#6B7280]' : ''} ${showErr('stok') ? errCls : ''}`}
+                  onKeyDown={(e) => ['e', 'E', '+', '-', '.', ','].includes(e.key) && e.preventDefault()}
+                  onChange={(e) => updateField('stok', e.target.value)}
+                />
+              </Field>
+              <Field label="Status Stok (otomatis)">
+                <div className="flex h-9 items-center rounded-lg border border-dashed border-[#E5E7EB] px-3">
+                  {previewStatus ? (
+                    <Badge variant={statusVariant(previewStatus)} dot>{previewStatus}</Badge>
+                  ) : (
+                    <span className="text-[12.5px] text-[#9CA3AF]">Lengkapi stok & batas minimum</span>
+                  )}
+                </div>
+              </Field>
+            </div>
           </div>
+          {/* Submit tersembunyi agar tombol Enter memicu validasi */}
+          <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
       </Modal>
     </AppShell>

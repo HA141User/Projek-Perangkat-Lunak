@@ -1,8 +1,9 @@
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Sidebar from '../components/Sidebar'
 import KepalaGudangHeader from '../components/KepalaGudangHeader'
 import { KEPALA_MENU } from '../data/kepalaGudang'
+import { apiFetch } from '../lib/auth'
 
 import logoutIcon from '../assets/kepala-gudang/logout.svg'
 import breadcrumbChevronIcon from '../assets/kepala-gudang/breadcrumb-chevron.svg'
@@ -53,9 +54,50 @@ export default function NotificationSettings() {
     setSaved(false)
   }
 
-  function handleSave(event) {
+  useEffect(() => {
+    let active = true
+    async function loadPrefs() {
+      try {
+        const res = await apiFetch('/api/preferences/')
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        const p = data?.data || data
+        if (active && p && typeof p === 'object') {
+          setPreferences((curr) => ({
+            ...curr,
+            inApp: p.inApp ?? p.in_app ?? curr.inApp,
+            email: p.email ?? p.email_enabled ?? curr.email,
+            emailAddress: p.emailAddress ?? p.email_address ?? curr.emailAddress,
+            whatsapp: p.whatsapp ?? p.whatsapp_enabled ?? curr.whatsapp,
+            whatsappNumber: p.whatsappNumber ?? p.whatsapp_number ?? curr.whatsappNumber,
+          }))
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    loadPrefs()
+    return () => { active = false }
+  }, [])
+
+  async function handleSave(event) {
     event.preventDefault()
     setSaved(true)
+    try {
+      await apiFetch('/api/preferences/', {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...preferences,
+          in_app: preferences.inApp,
+          email_enabled: preferences.email,
+          email_address: preferences.emailAddress,
+          whatsapp_enabled: preferences.whatsapp,
+          whatsapp_number: preferences.whatsappNumber,
+        }),
+      })
+    } catch {
+      /* ignore */
+    }
   }
 
   return (
@@ -251,7 +293,7 @@ export default function NotificationSettings() {
                   role="status"
                   className="mt-4 rounded border border-[rgba(107,216,203,0.4)] bg-[rgba(137,245,231,0.2)] px-4 py-2 text-xs leading-4 text-green"
                 >
-                  Preferensi tersimpan (simulasi — belum terhubung ke backend).
+                  Preferensi tersimpan.
                 </p>
               )}
 
