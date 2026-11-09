@@ -41,24 +41,78 @@ const TIPE_BADGE = {
   OPNAME: 'info',
 }
 
-function mapApiTx(tx, idx = 0) {
-  const rawTipe = String(tx.tipe ?? tx.jenis_transaksi ?? tx.type ?? 'MASUK').toUpperCase()
-  const tipe = rawTipe === 'IN' ? 'MASUK' : rawTipe === 'OUT' ? 'KELUAR' : rawTipe
-  const jumlah = Number(tx.jumlah ?? tx.kuantitas ?? tx.quantity ?? 0)
-  const sebelum = Number(tx.sebelum ?? tx.stok_sebelum ?? 0)
-  const sesudah = Number(tx.sesudah ?? tx.stok_sesudah ?? (tipe === 'MASUK' ? sebelum + jumlah : Math.max(0, sebelum - jumlah)))
-  return {
-    id: tx.id_transaksi ?? tx.id ?? idx + 1,
-    waktu: tx.waktu ?? tx.created_at ?? tx.tanggal ?? '-',
-    barang: tx.barang ?? tx.nama_barang ?? tx.item?.nama ?? tx.item?.nama_barang ?? '-',
-    sku: tx.sku ?? tx.kode_barang ?? tx.item?.sku ?? tx.item?.kode_barang ?? '-',
-    rak: tx.rak ?? tx.kode_lokasi ?? tx.item?.kode_lokasi ?? '-',
-    tipe,
-    jumlah,
-    staf: tx.staf ?? tx.user_nama ?? tx.user?.nama ?? tx.operator ?? '-',
-    sebelum,
-    sesudah,
+function formatDateTime(isoString) {
+  if (!isoString || isoString === '-') return '-'
+  try {
+    const d = new Date(isoString)
+    if (isNaN(d.getTime())) return isoString
+    return (
+      d.toLocaleString('id-ID', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }) + ' WIB'
+    )
+  } catch {
+    return isoString
   }
+}
+
+function mapTransactionsToRows(list, itemMap = {}) {
+  const rows = []
+
+  list.forEach((tx, idx) => {
+    const rawTipe = String(tx.tipe ?? tx.jenis_transaksi ?? tx.type ?? 'MASUK').toUpperCase()
+    const tipe = rawTipe === 'IN' || rawTipe === 'MASUK' ? 'MASUK' : rawTipe === 'OUT' || rawTipe === 'KELUAR' ? 'KELUAR' : rawTipe
+    const staf = tx.nama_user ?? tx.staf ?? tx.user_nama ?? tx.user?.nama ?? tx.operator ?? 'Staf Gudang'
+    const waktu = formatDateTime(tx.tanggal_transaksi ?? tx.waktu ?? tx.created_at ?? tx.tanggal)
+    const catatan = tx.keterangan ?? tx.catatan ?? ''
+
+    const items = Array.isArray(tx.items) && tx.items.length > 0 ? tx.items : [tx]
+
+    items.forEach((it, j) => {
+      const itemId = it.barang_id ?? it.id_barang ?? it.id ?? tx.id_barang
+      const itemInfo = (itemId && itemMap[itemId]) || {}
+
+      const barang =
+        it.nama_barang ?? it.nama ?? tx.barang ?? tx.nama_barang ?? itemInfo.nama_barang ?? itemInfo.nama ?? '-'
+      const sku =
+        it.kode_barang ?? it.sku ?? tx.sku ?? tx.kode_barang ?? itemInfo.kode_barang ?? itemInfo.sku ?? '-'
+      const rak = String(
+        it.rak ?? tx.rak ?? tx.kode_lokasi ?? itemInfo.lokasi?.nama_rak ?? itemInfo.rak ?? 'Rak A1'
+      ).replace(/^RAK\s+/i, '')
+      const jumlah = Number(it.jumlah ?? it.kuantitas ?? it.quantity ?? tx.jumlah ?? 0)
+
+      const stokSekarang = Number(itemInfo.stok_saat_ini ?? itemInfo.stok ?? 10)
+      const sebelum = Number(
+        it.stok_sebelum ??
+          tx.stok_sebelum ??
+          (tipe === 'MASUK' ? Math.max(0, stokSekarang - jumlah) : stokSekarang + jumlah)
+      )
+      const sesudah = Number(
+        it.stok_sesudah ?? tx.stok_sesudah ?? (tipe === 'MASUK' ? sebelum + jumlah : Math.max(0, sebelum - jumlah))
+      )
+
+      rows.push({
+        id: `${tx.id_transaksi ?? idx + 1}-${j}`,
+        txId: tx.id_transaksi ?? idx + 1,
+        waktu,
+        barang,
+        sku,
+        rak,
+        tipe,
+        jumlah,
+        staf,
+        catatan,
+        sebelum,
+        sesudah,
+      })
+    })
+  })
+
+  return rows
 }
 
 export default function LaporanInventaris() {
@@ -74,7 +128,7 @@ export default function LaporanInventaris() {
   const [loading, setLoading] = useState(true)
   const [snackbar, setSnackbar] = useState('')
 
-  // Ambil riwayat mutasi/laporan murni dari GET /api/reports/mutasi atau GET /api/transactions/
+  // Ambil riwayat mutasi/laporan murni dari GET /api/transactions/ dan data items server
   useEffect(() => {
     let active = true
     async function loadReports() {
@@ -84,14 +138,29 @@ export default function LaporanInventaris() {
         if (dari) qs.set('dari', dari)
         if (sampai) qs.set('sampai', sampai)
         const queryStr = qs.toString() ? `?${qs.toString()}` : ''
-        const res = await apiFetch(`/api/reports/mutasi${queryStr}`)
-        const finalRes = res.ok ? res : await apiFetch(`/api/transactions/${queryStr}`)
-        if (active && finalRes.ok) {
-          const list = unwrapList(await finalRes.json().catch(() => null))
-          setRows(list.map(mapApiTx))
+
+        const [itemsRes, txRes] = await Promise.all([
+          apiFetch('/api/items/'),
+          apiFetch(`/api/transactions/${queryStr}`),
+        ])
+
+        if (!active) return
+
+        const itemMap = {}
+        if (itemsRes.ok) {
+          const itemsList = unwrapList(await itemsRes.json().catch(() => null))
+          itemsList.forEach((it) => {
+            const id = it.id_barang ?? it.id
+            if (id) itemMap[id] = it
+          })
         }
-      } catch {
-        /* biarkan kosong jika gagal */
+
+        if (txRes.ok) {
+          const list = unwrapList(await txRes.json().catch(() => null))
+          setRows(mapTransactionsToRows(list, itemMap))
+        }
+      } catch (err) {
+        console.warn('Gagal memuat laporan mutasi:', err)
       } finally {
         if (active) setLoading(false)
       }
@@ -247,7 +316,10 @@ export default function LaporanInventaris() {
                     <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.waktu}</td>
                     <td className="px-4 py-3">
                       <span className="block text-[13.5px] font-medium text-[#111827]">{r.barang}</span>
-                      <span className="text-[12px] text-[#0037B0]">{r.sku}</span>
+                      <span className="text-[12px] font-mono text-[#0037B0]">{r.sku}</span>
+                      {r.catatan && (
+                        <span className="block text-[11px] text-[#6B7280] mt-0.5">{r.catatan}</span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#374151]">{r.rak}</td>
                     <td className="px-4 py-3 text-center">

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { ScanLine, CheckCircle, X, AlertTriangle, ArrowRight, QrCode } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
+import QrScannerModal from '../components/QrScannerModal'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_STAF = [
@@ -39,7 +40,7 @@ export default function TransaksiKeluar() {
           setRakOptions(
             list.map((it, idx) => ({
               id: it.id_barang ?? it.id ?? idx + 1,
-              kode: String(it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? `A-0${idx + 1}`).replace(/^RAK\s+/i, ''),
+              kode: String(it.rak ?? it.kode_lokasi ?? it.lokasi?.nama_rak ?? it.lokasi?.kode_lokasi ?? `A-0${idx + 1}`).replace(/^RAK\s+/i, ''),
               sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
               nama: it.nama ?? it.nama_barang ?? '-',
               stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
@@ -108,23 +109,28 @@ export default function TransaksiKeluar() {
     setErrorBanner('')
     setLoading(true)
     try {
+      const keteranganText = catatan ? `Dokumen: ${catatan}` : `Barang Keluar dari Rak ${selectedRak.kode}`
       const res = await apiFetch('/api/transactions/keluar', {
         method: 'POST',
         body: JSON.stringify({
-          id_barang: selectedRak.id,
-          item_id: selectedRak.id,
-          kode_barang: selectedRak.sku,
-          rak: selectedRak.kode,
-          jumlah: jumlahNum,
-          kuantitas: jumlahNum,
-          catatan,
-          keterangan: catatan,
-          type: 'OUT',
+          items: [
+            {
+              barang_id: Number(selectedRak.id),
+              kode_barang: selectedRak.sku,
+              jumlah: jumlahNum,
+            },
+          ],
+          keterangan: keteranganText,
+          catatan: keteranganText,
         }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(err.message || err.error || `Gagal menyimpan transaksi (${res.status})`)
+        const errorMsg =
+          err.message ||
+          (Array.isArray(err.errors) && err.errors[0]?.summary) ||
+          `Gagal menyimpan transaksi (${res.status})`
+        throw new Error(errorMsg)
       }
       setRakOptions((prev) =>
         prev.map((r) => (r.id === selectedRak.id ? { ...r, stok: stokSetelah } : r))
@@ -139,6 +145,20 @@ export default function TransaksiKeluar() {
 
   function handleTransaksiBaru() {
     setModal(null); setSelectedRak(null); setKodeManual(''); setCatatan('')
+  }
+
+  function handleScannerSuccess({ item, jumlah: qty, noDokumen }) {
+    setRakOptions((prev) =>
+      prev.map((r) => (r.sku === item.sku ? { ...r, stok: Math.max(0, r.stok - qty) } : r))
+    )
+    setModal({
+      rak: item.rak,
+      nama: item.nama,
+      jumlah: qty,
+      waktu: new Date().toLocaleTimeString('id-ID'),
+      stokSebelum: item.stok,
+      stokSetelah: Math.max(0, item.stok - qty),
+    })
   }
 
   return (
@@ -166,32 +186,16 @@ export default function TransaksiKeluar() {
           </div>
           <p className="mb-5 pl-8 text-[13px] text-[#6B7280]">Scan QR atau pilih kode rak secara manual.</p>
 
+          {/* Scan button */}
           <Btn
-            variant={showScanner ? 'secondary' : 'primary'}
+            variant="primary"
             size="md"
             className="mb-4 w-full"
-            icon={showScanner ? X : ScanLine}
-            onClick={() => setShowScanner((v) => !v)}
+            icon={ScanLine}
+            onClick={() => setShowScanner(true)}
           >
-            {showScanner ? 'Tutup Scanner QR' : 'Buka Scanner Kamera QR Rak'}
+            Buka Scanner Kamera QR Rak & Barang
           </Btn>
-
-          {showScanner && (
-            <div className="mb-4 rounded-xl border-2 border-dashed border-[#9CA3AF] bg-[#F9FAFB] p-5 text-center">
-              <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-xl bg-white text-[#374151] border border-[#E5E7EB]">
-                <QrCode size={24} />
-              </div>
-              <p className="text-[14px] font-medium text-[#111827]">Pindai QR Rak / Barang</p>
-              <p className="mt-1 text-[13px] text-[#6B7280]">Pilih dari daftar item server:</p>
-              <div className="mt-3 flex flex-wrap justify-center gap-2">
-                {rakOptions.filter((r) => r.stok > 0).slice(0, 6).map((r) => (
-                  <Btn key={`${r.id}-${r.kode}`} variant="secondary" size="sm" onClick={() => handleSelectRak(r)}>
-                    {r.kode} · {r.sku} ({r.stok} unit)
-                  </Btn>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div>
             <label className="mb-2 block text-[13px] font-medium text-[#374151]">Atau pilih / ketik kode rak atau SKU:</label>
@@ -215,11 +219,10 @@ export default function TransaksiKeluar() {
                     type="button"
                     onClick={() => handleSelectRak(r)}
                     disabled={r.stok === 0}
-                    className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors disabled:opacity-40 ${
-                      selectedRak?.id === r.id
+                    className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors disabled:opacity-40 ${selectedRak?.id === r.id
                         ? 'border-[#111827] bg-[#111827] text-white'
                         : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#111827] hover:text-[#111827]'
-                    }`}
+                      }`}
                   >
                     {r.kode} · {r.sku} <span className="text-[11px] opacity-70">({r.stok})</span>
                   </button>
@@ -358,6 +361,14 @@ export default function TransaksiKeluar() {
           </div>
         </div>
       )}
+
+      {/* Modal Scanner QR Kamera & Input Transaksi */}
+      <QrScannerModal
+        open={showScanner}
+        onClose={() => setShowScanner(false)}
+        type="KELUAR"
+        onConfirm={handleScannerSuccess}
+      />
     </AppShell>
   )
 }

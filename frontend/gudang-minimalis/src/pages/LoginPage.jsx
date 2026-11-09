@@ -80,8 +80,8 @@ export default function LoginPage() {
       if (!res.ok) {
         throw new Error(
           payload.message ||
-            payload.error ||
-            "Email atau kata sandi tidak valid.",
+          payload.error ||
+          "Email atau kata sandi tidak valid.",
         );
       }
 
@@ -131,7 +131,7 @@ export default function LoginPage() {
     } catch (err) {
       setErrorMsg(
         err.message ||
-          "Gagal terhubung ke server backend. Pastikan koneksi aktif.",
+        "Gagal terhubung ke server backend. Pastikan koneksi aktif.",
       );
     } finally {
       setLoading(false);
@@ -212,7 +212,7 @@ export default function LoginPage() {
                   type="email"
                   required
                   autoComplete="username"
-                  placeholder="nama@wh01.id"
+                  placeholder="nama@inventaris.test"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="min-w-0 flex-1 bg-transparent text-[14px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"

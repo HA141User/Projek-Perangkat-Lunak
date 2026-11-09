@@ -2,7 +2,7 @@ import { Link, NavLink } from 'react-router'
 import { LogOut, Archive } from 'lucide-react'
 
 export default function Sidebar({
-  items,
+  items = [],
   wide = false,
   logoutIcon,
   activeStyle = 'chip',

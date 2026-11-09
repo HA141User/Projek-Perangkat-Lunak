@@ -8,6 +8,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  optimizeDeps: {
+    include: ['lucide-react', 'react-router'],
+  },
   server: {
     proxy: {
       '/api': {

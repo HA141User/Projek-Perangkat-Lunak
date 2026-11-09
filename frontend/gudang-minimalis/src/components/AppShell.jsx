@@ -11,7 +11,7 @@
 import Sidebar from './Sidebar'
 
 export default function AppShell({
-  menuItems,
+  menuItems = [],
   userName,
   onLogout,
   pageTitle,

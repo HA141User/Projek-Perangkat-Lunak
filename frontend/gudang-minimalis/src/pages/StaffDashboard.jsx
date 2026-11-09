@@ -27,18 +27,69 @@ export default function StaffDashboard() {
     async function loadTransactions() {
       setLoading(true)
       try {
-        const res = await apiFetch('/api/transactions/')
-        if (active && res.ok) {
-          const list = unwrapList(await res.json().catch(() => null))
+        const [itemsRes, txRes] = await Promise.all([
+          apiFetch('/api/items/'),
+          apiFetch('/api/transactions/'),
+        ])
+        if (!active) return
+
+        const itemMap = {}
+        if (itemsRes.ok) {
+          const itemsList = unwrapList(await itemsRes.json().catch(() => null))
+          itemsList.forEach((it) => {
+            const id = it.id_barang ?? it.id
+            if (id) itemMap[id] = it
+          })
+        }
+
+        if (txRes.ok) {
+          const list = unwrapList(await txRes.json().catch(() => null))
           setTransactions(
             list.slice(0, 8).map((tx, idx) => {
               const rawTipe = String(tx.tipe ?? tx.jenis_transaksi ?? tx.type ?? 'IN').toUpperCase()
+              const firstItem = Array.isArray(tx.items) && tx.items.length > 0 ? tx.items[0] : null
+              const itemId = firstItem?.barang_id ?? tx.id_barang
+              const itemInfo = (itemId && itemMap[itemId]) || {}
+
+              const rak = String(
+                itemInfo.lokasi?.nama_rak ?? tx.rak ?? tx.kode_lokasi ?? 'Rak A1'
+              ).replace(/^RAK\s+/i, '')
+
+              const namaBarang =
+                firstItem?.nama_barang ?? itemInfo.nama_barang ?? tx.nama_barang ?? 'Barang'
+
+              const sku = firstItem?.kode_barang ?? itemInfo.kode_barang ?? ''
+
+              const jumlah = firstItem
+                ? tx.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
+                : Number(tx.jumlah ?? tx.kuantitas ?? 0)
+
+              let waktuDisplay = '-'
+              const rawWaktu = tx.tanggal_transaksi ?? tx.waktu ?? tx.created_at
+              if (rawWaktu) {
+                try {
+                  const d = new Date(rawWaktu)
+                  waktuDisplay = isNaN(d.getTime())
+                    ? rawWaktu
+                    : d.toLocaleString('id-ID', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                } catch {
+                  waktuDisplay = rawWaktu
+                }
+              }
+
               return {
                 id: tx.id_transaksi ?? tx.id ?? idx + 1,
-                waktu: tx.waktu ?? tx.created_at ?? '-',
-                rak: tx.rak ?? tx.kode_lokasi ?? tx.item?.kode_lokasi ?? '-',
+                waktu: waktuDisplay,
+                rak,
+                barang: namaBarang,
+                sku,
                 tipe: rawTipe === 'MASUK' || rawTipe === 'IN' ? 'IN' : 'OUT',
-                jumlah: Number(tx.jumlah ?? tx.kuantitas ?? tx.quantity ?? 0),
+                jumlah,
               }
             })
           )
@@ -179,8 +230,9 @@ export default function StaffDashboard() {
                       <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
                         {tx.waktu}
                       </td>
-                      <td className="px-5 py-3 font-mono text-[13.5px] font-medium text-[#111827]">
-                        {tx.rak}
+                      <td className="px-5 py-3 text-[13px] text-[#111827]">
+                        <span className="block font-medium">{tx.barang}</span>
+                        <span className="text-[11.5px] text-[#6B7280]">Rak {tx.rak} {tx.sku ? `· ${tx.sku}` : ''}</span>
                       </td>
                       <td className="px-5 py-3">
                         <Badge variant={tx.tipe === 'IN' ? 'success' : 'danger'}>

@@ -1,6 +1,12 @@
 export function getAuth() {
   const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token')
-  const user = JSON.parse(localStorage.getItem('auth_user') || sessionStorage.getItem('auth_user') || 'null')
+  let user = null
+  try {
+    const raw = localStorage.getItem('auth_user') || sessionStorage.getItem('auth_user')
+    user = raw ? JSON.parse(raw) : null
+  } catch {
+    user = null
+  }
   return { token, user }
 }
 

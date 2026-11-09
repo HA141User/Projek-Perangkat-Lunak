@@ -49,11 +49,21 @@ export default function WarehouseDashboard() {
 
         const masukCount = dashData.barang_masuk_hari_ini ?? dashData.total_masuk ?? txList
           .filter((t) => ['MASUK', 'IN'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
-          .reduce((sum, t) => sum + Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0), 0)
+          .reduce((sum, t) => {
+            const qty = Array.isArray(t.items) && t.items.length > 0
+              ? t.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
+              : Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0)
+            return sum + qty
+          }, 0)
 
         const keluarCount = dashData.barang_keluar_hari_ini ?? dashData.total_keluar ?? txList
           .filter((t) => ['KELUAR', 'OUT'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
-          .reduce((sum, t) => sum + Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0), 0)
+          .reduce((sum, t) => {
+            const qty = Array.isArray(t.items) && t.items.length > 0
+              ? t.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
+              : Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0)
+            return sum + qty
+          }, 0)
 
         const pendingOpn = dashData.opname_menunggu ?? dashData.pending_opnames ?? opnList
           .filter((o) => !['DISETUJUI', 'DITOLAK', 'FINAL', 'APPROVED', 'REJECTED'].includes(String(o.status ?? '').toUpperCase()))

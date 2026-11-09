@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
+import QrLabelModal from '../components/QrLabelModal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
@@ -45,7 +46,7 @@ function normalizeKode(raw) {
 const zonaByValue = (value) => ZONA.find((z) => z.value === value)
 
 function mapApiLocation(loc, idx = 0) {
-  const rawKode = loc.kode_lokasi ?? loc.kode ?? loc.nama_lokasi ?? loc.name ?? `RAK A-0${idx + 1}`
+  const rawKode = loc.nama_rak ?? loc.kode_lokasi ?? loc.kode ?? loc.nama_lokasi ?? loc.name ?? `RAK A-0${idx + 1}`
   const kode = normalizeKode(String(rawKode).toUpperCase().startsWith('RAK') ? rawKode : `RAK ${rawKode}`)
   const huruf = KODE_REGEX.exec(kode)?.[1] ?? 'A'
   const matchedZona = ZONA.find((z) => z.huruf === huruf)?.value ?? ZONA[0].value
@@ -505,50 +506,16 @@ export default function AdminRak() {
         </p>
       </Modal>
 
-      {/* Modal QR Code */}
-      <Modal
+      {/* Modal Cetak Label QR Rak */}
+      <QrLabelModal
         open={!!qrModalRak}
         onClose={() => setQrModalRak(null)}
-        title={qrModalRak?.kode ?? ''}
-        subtitle={qrModalRak?.zona ?? ''}
-        icon={QrCode}
-        maxWidth="max-w-sm"
-        footer={
-          <>
-            <Btn variant="secondary" onClick={() => setQrModalRak(null)}>Tutup</Btn>
-            <Btn
-              variant="primary"
-              icon={Printer}
-              onClick={() => {
-                alert(`Mengirim dokumen stiker barcode ${qrModalRak.kode} ke printer thermal...`)
-                setQrModalRak(null)
-              }}
-            >
-              Cetak Stiker Rak
-            </Btn>
-          </>
-        }
-      >
-        <div className="flex flex-col items-center">
-          <div className="inline-block rounded-lg border-2 border-dashed border-[#E5E7EB] bg-[#F9FAFB] p-4">
-            <div className="grid size-36 place-items-center rounded bg-white p-2 shadow-sm border border-[#E5E7EB]">
-              <div className="flex flex-col items-center">
-                <div className="flex gap-1">
-                  <div className="size-8 border-4 border-black" />
-                  <div className="size-8 bg-black" />
-                  <div className="size-8 border-4 border-black" />
-                </div>
-                <span className="mt-2 font-mono text-[9px] font-bold tracking-widest text-black">
-                  {qrModalRak?.kode.replace(/\s+/g, '-')}
-                </span>
-              </div>
-            </div>
-            <span className="mt-2 block text-center font-mono text-[12px] text-[#6B7280]">
-              ID: WH01-{qrModalRak?.kode.replace(/\s+/g, '')}
-            </span>
-          </div>
-        </div>
-      </Modal>
+        title={qrModalRak?.kode ?? 'Label Rak'}
+        code={qrModalRak?.kode ?? 'RAK A-12'}
+        zone={`KORIDOR ${qrModalRak?.kode?.slice(-2) || '01'} • ${qrModalRak?.zona?.toUpperCase() || 'ZONA A'}`}
+        uid={`WH-01 • UID: BIN-${qrModalRak?.kode?.replace(/\s+/g, '') || 'A12'}-2024`}
+        extraInfo={`Kapasitas Maks: ${qrModalRak?.kapasitas || 50} Dus`}
+      />
     </AppShell>
   )
 }

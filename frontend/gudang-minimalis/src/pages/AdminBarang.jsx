@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { PackagePlus, Search, Filter, Edit2, Trash2, Package, CheckCircle2, Lock, RefreshCw } from 'lucide-react'
+import { PackagePlus, Search, Filter, Edit2, Trash2, Package, CheckCircle2, Lock, RefreshCw, QrCode } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
+import QrLabelModal from '../components/QrLabelModal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
@@ -56,13 +57,27 @@ function statusVariant(status) {
 function mapApiItem(it, idx = 0) {
   const stok = Number(it.stok ?? it.stok_saat_ini ?? it.stock ?? 0)
   const minStok = Number(it.minStok ?? it.batas_stok_minimum ?? it.min_stock ?? 5)
-  const rawRak = it.rak ?? it.kode_lokasi ?? it.lokasi_nama ?? it.location?.kode ?? 'RAK A-01'
+  const rawRak =
+    (typeof it.rak === 'string' ? it.rak : null) ??
+    it.lokasi?.nama_rak ??
+    it.lokasi?.kode_lokasi ??
+    it.kode_lokasi ??
+    it.lokasi_nama ??
+    it.location?.kode ??
+    'RAK A-01'
   const rak = String(rawRak).toUpperCase().startsWith('RAK') ? rawRak : `RAK ${rawRak}`
+  const rawKat =
+    it.kategori?.nama_kategori ??
+    (typeof it.kategori === 'string' ? it.kategori : null) ??
+    it.kategori_nama ??
+    it.category?.nama ??
+    'Elektronik'
+  const kategori = typeof rawKat === 'string' ? rawKat : 'Elektronik'
   return {
     id: it.id_barang ?? it.id ?? idx + 1,
     sku: it.sku ?? it.kode_barang ?? it.kode ?? `BRG-00${idx + 1}`,
     nama: it.nama ?? it.nama_barang ?? it.name ?? 'Barang Gudang',
-    kategori: it.kategori ?? it.kategori_nama ?? it.category?.nama ?? 'Elektronik',
+    kategori,
     rak,
     satuan: it.satuan ?? it.unit ?? 'Pcs',
     stok,
@@ -160,6 +175,9 @@ export default function AdminBarang() {
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState('')
+  const [qrModalItem, setQrModalItem] = useState(null)
+  const [qrDataUrl, setQrDataUrl] = useState('')
+  const [loadingQr, setLoadingQr] = useState(false)
 
   // Ambil master barang, kategori, dan lokasi murni dari API backend
   useEffect(() => {
@@ -282,6 +300,25 @@ export default function AdminBarang() {
 
   function handleClose() {
     setIsModalOpen(false)
+  }
+
+  async function handleOpenQr(item) {
+    setQrModalItem(item)
+    setQrDataUrl('')
+    setLoadingQr(true)
+    try {
+      const res = await apiFetch(`/api/items/${item.id}/qr`)
+      if (res.ok) {
+        const payload = await res.json().catch(() => null)
+        if (payload?.data_url) {
+          setQrDataUrl(payload.data_url)
+        }
+      }
+    } catch (err) {
+      console.warn('Gagal memuat QR dari backend:', err)
+    } finally {
+      setLoadingQr(false)
+    }
   }
 
   function updateField(key, value) {
@@ -462,6 +499,7 @@ export default function AdminBarang() {
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="inline-flex items-center gap-1">
+                      <Btn variant="ghost" size="sm" icon={QrCode} title="Lihat & Cetak Label QR" onClick={() => handleOpenQr(item)} />
                       <Btn variant="ghost" size="sm" icon={Edit2} onClick={() => handleOpenEdit(item)} />
                       <Btn variant="danger" size="sm" icon={Trash2} onClick={() => handleDelete(item)} />
                     </div>
@@ -638,6 +676,19 @@ export default function AdminBarang() {
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
       </Modal>
+
+      {/* Modal Cetak Label QR Barang */}
+      <QrLabelModal
+        open={!!qrModalItem}
+        onClose={() => setQrModalItem(null)}
+        title={qrModalItem?.nama ?? 'Label Barang'}
+        code={qrModalItem?.sku ?? 'BRG-001'}
+        zone={`${(qrModalItem?.kategori || 'Elektronik').toUpperCase()} • ${qrModalItem?.rak || 'LOKASI'}`}
+        uid={`SKU-${qrModalItem?.sku || 'BRG'} • ID: ${qrModalItem?.id || 1}`}
+        extraInfo={`Stok: ${qrModalItem?.stok ?? 0} ${qrModalItem?.satuan || 'Unit'}`}
+        qrDataUrl={qrDataUrl}
+        loading={loadingQr}
+      />
     </AppShell>
   )
 }

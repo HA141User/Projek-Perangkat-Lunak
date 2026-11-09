@@ -44,7 +44,8 @@ export default function AuditOpname() {
           const list = unwrapList(await res.json().catch(() => null))
           const grouped = {}
           list.forEach((it, idx) => {
-            const rak = String(it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? 'UMUM').replace(/^RAK\s+/i, '')
+            if (!it || typeof it !== 'object') return
+            const rak = String(it.rak ?? it.kode_lokasi ?? it.lokasi?.nama_rak ?? it.lokasi?.kode_lokasi ?? 'UMUM').replace(/^RAK\s+/i, '')
             if (!grouped[rak]) grouped[rak] = []
             grouped[rak].push({
               id: it.id_barang ?? it.id ?? idx + 1,

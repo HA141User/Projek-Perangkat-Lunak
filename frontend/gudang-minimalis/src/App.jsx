@@ -1,25 +1,23 @@
-import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
+import ErrorBoundary from './components/ErrorBoundary'
 
-// Eager — always needed
+// Pages
 import LoginPage from './pages/LoginPage'
 import StaffDashboard from './pages/StaffDashboard'
+import TransaksiMasuk from './pages/TransaksiMasuk'
+import TransaksiKeluar from './pages/TransaksiKeluar'
+import AuditOpname from './pages/AuditOpname'
+import StaffBarang from './pages/StaffBarang'
+import LaporanInventaris from './pages/LaporanInventaris'
 import WarehouseDashboard from './pages/WarehouseDashboard'
+import PersetujuanOpname from './pages/PersetujuanOpname'
+import NotifikasiKepala from './pages/NotifikasiKepala'
 import AdminDashboard from './pages/AdminDashboard'
-
-// Lazy — loaded on demand
-const TransaksiMasuk       = lazy(() => import('./pages/TransaksiMasuk'))
-const TransaksiKeluar      = lazy(() => import('./pages/TransaksiKeluar'))
-const AuditOpname          = lazy(() => import('./pages/AuditOpname'))
-const StaffBarang          = lazy(() => import('./pages/StaffBarang'))
-const PersetujuanOpname    = lazy(() => import('./pages/PersetujuanOpname'))
-const LaporanInventaris    = lazy(() => import('./pages/LaporanInventaris'))
-const NotifikasiKepala     = lazy(() => import('./pages/NotifikasiKepala'))
-const AdminPengguna        = lazy(() => import('./pages/AdminPengguna'))
-const AdminBarang          = lazy(() => import('./pages/AdminBarang'))
-const AdminRak             = lazy(() => import('./pages/AdminRak'))
-const AdminLaporanOtomatis = lazy(() => import('./pages/AdminLaporanOtomatis'))
-const AdminLog             = lazy(() => import('./pages/AdminLog'))
+import AdminPengguna from './pages/AdminPengguna'
+import AdminBarang from './pages/AdminBarang'
+import AdminRak from './pages/AdminRak'
+import AdminLaporanOtomatis from './pages/AdminLaporanOtomatis'
+import AdminLog from './pages/AdminLog'
 
 function Placeholder({ title }) {
   return (
@@ -31,58 +29,44 @@ function Placeholder({ title }) {
   )
 }
 
-function Fallback() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-page">
-      <span className="inline-block size-5 animate-spin rounded-full border-2 border-brand border-t-transparent" />
-    </div>
-  )
-}
-
-function SafeLazy({ component: Component }) {
-  return (
-    <Suspense fallback={<Fallback />}>
-      <Component />
-    </Suspense>
-  )
-}
-
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="/login" element={<LoginPage />} />
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/login" element={<LoginPage />} />
 
-        {/* Staff Routes */}
-        <Route path="/staff" element={<StaffDashboard />} />
-        <Route path="/staff/masuk"   element={<SafeLazy component={TransaksiMasuk} />} />
-        <Route path="/staff/keluar"  element={<SafeLazy component={TransaksiKeluar} />} />
-        <Route path="/staff/opname"  element={<SafeLazy component={AuditOpname} />} />
-        <Route path="/staff/barang"  element={<SafeLazy component={StaffBarang} />} />
-        <Route path="/staff/riwayat" element={<SafeLazy component={LaporanInventaris} />} />
-        <Route path="/staff/*"       element={<Placeholder title="Modul Staf Gudang" />} />
+          {/* Staff Routes */}
+          <Route path="/staff" element={<StaffDashboard />} />
+          <Route path="/staff/masuk" element={<TransaksiMasuk />} />
+          <Route path="/staff/keluar" element={<TransaksiKeluar />} />
+          <Route path="/staff/opname" element={<AuditOpname />} />
+          <Route path="/staff/barang" element={<StaffBarang />} />
+          <Route path="/staff/riwayat" element={<LaporanInventaris />} />
+          <Route path="/staff/*" element={<Placeholder title="Modul Staf Gudang" />} />
 
-        {/* Kepala Gudang Routes */}
-        <Route path="/kepala-gudang" element={<WarehouseDashboard />} />
-        <Route path="/kepala-gudang/persetujuan" element={<SafeLazy component={PersetujuanOpname} />} />
-        <Route path="/kepala-gudang/laporan"     element={<SafeLazy component={LaporanInventaris} />} />
-        <Route path="/kepala-gudang/notifikasi"  element={<SafeLazy component={NotifikasiKepala} />} />
-        <Route path="/kepala-gudang/*"           element={<Placeholder title="Modul Kepala Gudang" />} />
+          {/* Kepala Gudang Routes */}
+          <Route path="/kepala-gudang" element={<WarehouseDashboard />} />
+          <Route path="/kepala-gudang/persetujuan" element={<PersetujuanOpname />} />
+          <Route path="/kepala-gudang/laporan" element={<LaporanInventaris />} />
+          <Route path="/kepala-gudang/notifikasi" element={<NotifikasiKepala />} />
+          <Route path="/kepala-gudang/*" element={<Placeholder title="Modul Kepala Gudang" />} />
 
-        {/* Admin Routes */}
-        <Route path="/admin" element={<AdminDashboard />} />
-        <Route path="/admin/pengguna"        element={<SafeLazy component={AdminPengguna} />} />
-        <Route path="/admin/barang"          element={<SafeLazy component={AdminBarang} />} />
-        <Route path="/admin/rak"             element={<SafeLazy component={AdminRak} />} />
-        <Route path="/admin/persetujuan"     element={<SafeLazy component={PersetujuanOpname} />} />
-        <Route path="/admin/laporan"         element={<SafeLazy component={LaporanInventaris} />} />
-        <Route path="/admin/laporan-otomatis" element={<SafeLazy component={AdminLaporanOtomatis} />} />
-        <Route path="/admin/log"             element={<SafeLazy component={AdminLog} />} />
-        <Route path="/admin/*"               element={<Placeholder title="Modul Administrasi" />} />
+          {/* Admin Routes */}
+          <Route path="/admin" element={<AdminDashboard />} />
+          <Route path="/admin/pengguna" element={<AdminPengguna />} />
+          <Route path="/admin/barang" element={<AdminBarang />} />
+          <Route path="/admin/rak" element={<AdminRak />} />
+          <Route path="/admin/persetujuan" element={<PersetujuanOpname />} />
+          <Route path="/admin/laporan" element={<LaporanInventaris />} />
+          <Route path="/admin/laporan-otomatis" element={<AdminLaporanOtomatis />} />
+          <Route path="/admin/log" element={<AdminLog />} />
+          <Route path="/admin/*" element={<Placeholder title="Modul Administrasi" />} />
 
-        <Route path="*" element={<Placeholder title="Halaman Tidak Ditemukan (404)" />} />
-      </Routes>
-    </BrowserRouter>
+          <Route path="*" element={<Placeholder title="Halaman Tidak Ditemukan (404)" />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   )
 }
