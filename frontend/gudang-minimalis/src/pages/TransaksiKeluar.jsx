@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ScanLine, CheckCircle, X, AlertTriangle, ArrowRight, QrCode } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
-import { getAuth, clearAuth, apiFetch } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -14,29 +14,46 @@ const MENU_STAF = [
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const RAK_OPTIONS = [
-  { kode: 'A-01', nama: 'Kabel UTP Cat6 100m', stok: 18, min: 5 },
-  { kode: 'A-02', nama: 'Switch Hub 16-Port Gigabit', stok: 3, min: 5 },
-  { kode: 'B-01', nama: 'Kardus Double Wall A3', stok: 120, min: 50 },
-  { kode: 'B-02', nama: 'Lakban Bening Heavy Duty', stok: 4, min: 10 },
-  { kode: 'C-01', nama: 'Kertas Thermal Stiker 100x150', stok: 45, min: 15 },
-  { kode: 'C-02', nama: 'Barcode Scanner Handheld 2D', stok: 0, min: 2 },
-  { kode: 'D-01', nama: 'Rompi Keselamatan High-Vis', stok: 22, min: 10 },
-  { kode: 'D-02', nama: 'Sarung Tangan Karet Grip', stok: 2, min: 12 },
-]
-
 export default function TransaksiKeluar() {
   const navigate = useNavigate()
   const { user } = getAuth()
 
+  const [rakOptions, setRakOptions] = useState([])
   const [showScanner, setShowScanner] = useState(false)
   const [kodeManual, setKodeManual] = useState('')
   const [selectedRak, setSelectedRak] = useState(null)
   const [jumlah, setJumlah] = useState(1)
-  const [catatan, setCatatan] = useState('Pengeluaran Divisi Logistik')
+  const [catatan, setCatatan] = useState('')
   const [loading, setLoading] = useState(false)
   const [errorBanner, setErrorBanner] = useState('')
   const [modal, setModal] = useState(null)
+
+  // Ambil daftar barang & lokasi murni dari GET /api/items/
+  useEffect(() => {
+    let active = true
+    async function loadItems() {
+      try {
+        const res = await apiFetch('/api/items/')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          setRakOptions(
+            list.map((it, idx) => ({
+              id: it.id_barang ?? it.id ?? idx + 1,
+              kode: String(it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? `A-0${idx + 1}`).replace(/^RAK\s+/i, ''),
+              sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
+              nama: it.nama ?? it.nama_barang ?? '-',
+              stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
+              min: Number(it.minStok ?? it.batas_stok_minimum ?? 5),
+            }))
+          )
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      }
+    }
+    loadItems()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() { clearAuth(); navigate('/login') }
 
@@ -48,12 +65,35 @@ export default function TransaksiKeluar() {
     setErrorBanner('')
   }
 
-  function handleGunakanKode() {
-    const q = kodeManual.trim().toUpperCase()
+  async function handleGunakanKode() {
+    const q = kodeManual.trim().toUpperCase().replace(/^RAK\s+/i, '')
     if (!q) return
-    const match = RAK_OPTIONS.find((r) => r.kode === q || r.kode.includes(q))
-    if (match) handleSelectRak(match)
-    else setErrorBanner(`Kode rak "${q}" tidak ditemukan di database WH-01.`)
+    const match = rakOptions.find((r) => r.kode.toUpperCase() === q || r.sku?.toUpperCase() === q || r.kode.toUpperCase().includes(q))
+    if (match) {
+      handleSelectRak(match)
+      return
+    }
+    try {
+      const res = await apiFetch(`/api/items/by-code/${encodeURIComponent(q)}`)
+      if (res.ok) {
+        const data = await res.json().catch(() => null)
+        const it = data?.data || data
+        if (it && (it.nama || it.nama_barang)) {
+          handleSelectRak({
+            id: it.id_barang ?? it.id ?? 1,
+            kode: String(it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
+            sku: it.sku ?? it.kode_barang ?? q,
+            nama: it.nama ?? it.nama_barang,
+            stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
+            min: Number(it.minStok ?? it.batas_stok_minimum ?? 5),
+          })
+          return
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setErrorBanner(`Kode rak / SKU "${q}" tidak ditemukan di database server.`)
   }
 
   const stokSekarang = selectedRak ? selectedRak.stok : 0
@@ -68,10 +108,27 @@ export default function TransaksiKeluar() {
     setErrorBanner('')
     setLoading(true)
     try {
-      await apiFetch('/api/transactions', {
+      const res = await apiFetch('/api/transactions/keluar', {
         method: 'POST',
-        body: JSON.stringify({ rak: selectedRak.kode, jumlah: jumlahNum, catatan, type: 'OUT' }),
+        body: JSON.stringify({
+          id_barang: selectedRak.id,
+          item_id: selectedRak.id,
+          kode_barang: selectedRak.sku,
+          rak: selectedRak.kode,
+          jumlah: jumlahNum,
+          kuantitas: jumlahNum,
+          catatan,
+          keterangan: catatan,
+          type: 'OUT',
+        }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.message || err.error || `Gagal menyimpan transaksi (${res.status})`)
+      }
+      setRakOptions((prev) =>
+        prev.map((r) => (r.id === selectedRak.id ? { ...r, stok: stokSetelah } : r))
+      )
       setModal({ rak: selectedRak.kode, nama: selectedRak.nama, jumlah: jumlahNum, waktu: new Date().toLocaleTimeString('id-ID'), stokSebelum: stokSekarang, stokSetelah, isKritis, isHabis })
     } catch (err) {
       setErrorBanner(err.message || 'Gagal menyimpan transaksi.')
@@ -81,7 +138,7 @@ export default function TransaksiKeluar() {
   }
 
   function handleTransaksiBaru() {
-    setModal(null); setSelectedRak(null); setKodeManual(''); setCatatan('Pengeluaran Divisi Logistik')
+    setModal(null); setSelectedRak(null); setKodeManual(''); setCatatan('')
   }
 
   return (
@@ -124,12 +181,12 @@ export default function TransaksiKeluar() {
               <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-xl bg-white text-[#374151] border border-[#E5E7EB]">
                 <QrCode size={24} />
               </div>
-              <p className="text-[14px] font-medium text-[#111827]">Simulasi Pindai Kamera</p>
-              <p className="mt-1 text-[13px] text-[#6B7280]">Klik rak di bawah untuk mensimulasikan pemindaian:</p>
+              <p className="text-[14px] font-medium text-[#111827]">Pindai QR Rak / Barang</p>
+              <p className="mt-1 text-[13px] text-[#6B7280]">Pilih dari daftar item server:</p>
               <div className="mt-3 flex flex-wrap justify-center gap-2">
-                {RAK_OPTIONS.filter((r) => r.stok > 0).slice(0, 4).map((r) => (
-                  <Btn key={r.kode} variant="secondary" size="sm" onClick={() => handleSelectRak(r)}>
-                    {r.kode} ({r.stok} unit)
+                {rakOptions.filter((r) => r.stok > 0).slice(0, 6).map((r) => (
+                  <Btn key={`${r.id}-${r.kode}`} variant="secondary" size="sm" onClick={() => handleSelectRak(r)}>
+                    {r.kode} · {r.sku} ({r.stok} unit)
                   </Btn>
                 ))}
               </div>
@@ -137,11 +194,11 @@ export default function TransaksiKeluar() {
           )}
 
           <div>
-            <label className="mb-2 block text-[13px] font-medium text-[#374151]">Atau pilih / ketik kode rak:</label>
+            <label className="mb-2 block text-[13px] font-medium text-[#374151]">Atau pilih / ketik kode rak atau SKU:</label>
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Ketik kode rak (misal: A-01)"
+                placeholder="Ketik kode rak atau SKU..."
                 value={kodeManual}
                 onChange={(e) => setKodeManual(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleGunakanKode()}
@@ -149,24 +206,26 @@ export default function TransaksiKeluar() {
               />
               <Btn variant="secondary" size="md" onClick={handleGunakanKode}>Pilih</Btn>
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="text-[12.5px] text-[#6B7280]">Stok ready:</span>
-              {RAK_OPTIONS.map((r) => (
-                <button
-                  key={r.kode}
-                  type="button"
-                  onClick={() => handleSelectRak(r)}
-                  disabled={r.stok === 0}
-                  className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors disabled:opacity-40 ${
-                    selectedRak?.kode === r.kode
-                      ? 'border-[#111827] bg-[#111827] text-white'
-                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#111827] hover:text-[#111827]'
-                  }`}
-                >
-                  {r.kode} <span className="text-[11px] opacity-70">({r.stok})</span>
-                </button>
-              ))}
-            </div>
+            {rakOptions.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-[12.5px] text-[#6B7280]">Dari Server:</span>
+                {rakOptions.map((r) => (
+                  <button
+                    key={`${r.id}-${r.kode}`}
+                    type="button"
+                    onClick={() => handleSelectRak(r)}
+                    disabled={r.stok === 0}
+                    className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors disabled:opacity-40 ${
+                      selectedRak?.id === r.id
+                        ? 'border-[#111827] bg-[#111827] text-white'
+                        : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#111827] hover:text-[#111827]'
+                    }`}
+                  >
+                    {r.kode} · {r.sku} <span className="text-[11px] opacity-70">({r.stok})</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

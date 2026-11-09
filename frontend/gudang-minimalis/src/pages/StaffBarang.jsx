@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Search } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Badge from '../components/ui/Badge'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -14,30 +14,54 @@ const MENU_STAF = [
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const DUMMY_BARANG = [
-  { sku: 'ATK-001', nama: 'Kertas HVS A4 80gsm', kategori: 'Alat Tulis', rak: 'A-01', stok: 120, status: 'aman' },
-  { sku: 'ATK-002', nama: 'Toner Printer Laser', kategori: 'Perangkat Printer', rak: 'A-02', stok: 34, status: 'aman' },
-  { sku: 'ATK-003', nama: 'Ballpoint Biru (Lusin)', kategori: 'Alat Tulis', rak: 'A-03', stok: 8, status: 'aman' },
-  { sku: 'ATK-004', nama: 'Amplop Coklat Besar', kategori: 'Kemasan', rak: 'B-01', stok: 200, status: 'aman' },
-  { sku: 'ATK-005', nama: 'Stappler No.10', kategori: 'Alat Tulis', rak: 'B-05', stok: 3, status: 'kritis' },
-  { sku: 'ATK-006', nama: 'Binder Clip 25mm', kategori: 'Alat Tulis', rak: 'B-11', stok: 15, status: 'aman' },
-  { sku: 'ATK-007', nama: 'Spidol Whiteboard Hitam', kategori: 'Alat Tulis', rak: 'C-07', stok: 22, status: 'aman' },
-  { sku: 'ATK-008', nama: 'Map Plastik Transparan', kategori: 'Perlengkapan', rak: 'D-02', stok: 5, status: 'kritis' },
-  { sku: 'ATK-009', nama: 'Lem Kertas UHU 21g', kategori: 'Alat Tulis', rak: 'C-01', stok: 0, status: 'habis' },
-  { sku: 'ATK-010', nama: 'Penggaris Besi 30cm', kategori: 'Alat Ukur', rak: 'D-05', stok: 11, status: 'aman' },
-]
-
 const statusVariant = { aman: 'success', kritis: 'warning', habis: 'danger' }
 const statusLabel = { aman: 'Aman', kritis: 'Kritis', habis: 'Habis' }
 
 export default function StaffBarang() {
   const navigate = useNavigate()
   const { user } = getAuth()
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+
+  // Ambil katalog barang murni dari GET /api/items/
+  useEffect(() => {
+    let active = true
+    async function loadItems() {
+      setLoading(true)
+      try {
+        const res = await apiFetch('/api/items/')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          setItems(
+            list.map((it, idx) => {
+              const stok = Number(it.stok ?? it.stok_saat_ini ?? 0)
+              const min = Number(it.minStok ?? it.batas_stok_minimum ?? 5)
+              const status = stok === 0 ? 'habis' : stok <= min ? 'kritis' : 'aman'
+              return {
+                sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
+                nama: it.nama ?? it.nama_barang ?? '-',
+                kategori: it.kategori ?? it.kategori_nama ?? it.kategori?.nama_kategori ?? '-',
+                rak: it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? '-',
+                stok,
+                status,
+              }
+            })
+          )
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadItems()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() { clearAuth(); navigate('/login') }
 
-  const filtered = DUMMY_BARANG.filter((b) => {
+  const filtered = items.filter((b) => {
     const q = search.toLowerCase()
     return b.nama.toLowerCase().includes(q) || b.sku.toLowerCase().includes(q)
   })
@@ -63,7 +87,7 @@ export default function StaffBarang() {
             <h3 className="text-[14px] font-semibold text-[#111827]">Daftar Inventaris Barang</h3>
             <p className="mt-0.5 text-[13px] text-[#6B7280]">Gudang WH-01 · Hanya tampilan</p>
           </div>
-          <span className="text-[13px] text-[#6B7280]">{filtered.length} dari {DUMMY_BARANG.length} item</span>
+          <span className="text-[13px] text-[#6B7280]">{filtered.length} dari {items.length} item</span>
         </div>
 
         <div className="overflow-x-auto">
@@ -76,10 +100,16 @@ export default function StaffBarang() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E5E7EB]">
-              {filtered.length === 0 ? (
+              {loading ? (
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-[14px] text-[#6B7280]">
-                    Tidak ada barang yang sesuai pencarian.
+                    Memuat katalog barang dari server...
+                  </td>
+                </tr>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-[14px] text-[#6B7280]">
+                    Tidak ada barang yang ditemukan di server.
                   </td>
                 </tr>
               ) : (

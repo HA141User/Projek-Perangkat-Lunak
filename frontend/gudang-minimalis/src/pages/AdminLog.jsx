@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Search, Download, Filter } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
-import { getAuth, clearAuth } from '../lib/auth'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { downloadCSV, fileStamp } from '../lib/csv'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -17,16 +18,6 @@ const MENU_ADMIN = [
   { label: 'Log Aktivitas', to: '/admin/log' },
 ]
 
-const INITIAL_LOGS = [
-  { id: 1, waktu: '29 Okt 2026, 01:42:10', kode: 'USER_CREATE', aktor: 'Hendrawan Putra (Admin)', entitas: 'User ID: 104', ip: '192.168.1.104', keterangan: 'Mendaftarkan akun staf baru: Siti Aminah (Staf Gudang) dengan otorisasi Zona A & B.' },
-  { id: 2, waktu: '29 Okt 2026, 00:30:00', kode: 'SYSTEM_AUTO', aktor: 'Daemon Scheduler', entitas: 'Cronjob WH-01', ip: '127.0.0.1', keterangan: 'Mengirimkan Laporan Otomatis Mingguan mutasi inventaris ke 3 email penerima (PDF & XLSX).' },
-  { id: 3, waktu: '28 Okt 2026, 16:45:18', kode: 'UPDATE_MASTER', aktor: 'Hendrawan Putra (Kepala Gudang)', entitas: 'SKU: CBL-CAT6-100M', ip: '192.168.1.88', keterangan: 'Pembaruan ambang batas minimum stok Kabel UTP dari 5 unit menjadi 8 unit.' },
-  { id: 4, waktu: '28 Okt 2026, 14:15:22', kode: 'STOCK_IN', aktor: 'Budi Santoso (Staf)', entitas: 'RAK A-03 // IN-902', ip: '192.168.1.120', keterangan: 'Penerimaan barang masuk: 24 Dus Kabel UTP Cat6 via scan QR stiker rak.' },
-  { id: 5, waktu: '28 Okt 2026, 11:39:42', kode: 'AUDIT_SUBMIT', aktor: 'Budi Santoso (Staf)', entitas: 'Opname Sesi #044', ip: '192.168.1.120', keterangan: 'Menyelesaikan input fisik stok opname RAK A-12 (14 item). Berkas menunggu review Kepala Gudang.' },
-  { id: 6, waktu: '28 Okt 2026, 09:20:11', kode: 'OPNAME_APPROVE', aktor: 'Hendrawan Putra (Kepala Gudang)', entitas: 'Opname Sesi #043', ip: '192.168.1.88', keterangan: 'Menyetujui rekonsiliasi stok opname Zona B: Selisih penyesuaian +2 dus disahkan.' },
-  { id: 7, waktu: '28 Okt 2026, 08:40:05', kode: 'STOCK_OUT', aktor: 'Ahmad Fauzi (Staf)', entitas: 'RAK B-02 // OUT-411', ip: '192.168.1.115', keterangan: 'Pengeluaran logistik: 6 Dus Lakban Bening Heavy Duty untuk divisi packing ekspedisi.' },
-]
-
 const CODE_BADGE = {
   USER_CREATE: 'info',
   SYSTEM_AUTO: 'neutral',
@@ -37,12 +28,46 @@ const CODE_BADGE = {
   OPNAME_APPROVE: 'success',
 }
 
+function mapApiLog(l, idx = 0) {
+  return {
+    id: l.id_log ?? l.id ?? idx + 1,
+    waktu: l.waktu ?? l.created_at ?? l.timestamp ?? '-',
+    kode: l.kode ?? l.aksi ?? l.action ?? l.event ?? 'SYSTEM_AUTO',
+    aktor: l.aktor ?? l.user_nama ?? l.user?.nama ?? l.actor ?? 'Sistem WH-01',
+    entitas: l.entitas ?? l.target ?? l.entity ?? 'WH-01',
+    ip: l.ip ?? l.ip_address ?? '-',
+    keterangan: l.keterangan ?? l.deskripsi ?? l.description ?? l.message ?? '',
+  }
+}
+
 export default function AdminLog() {
   const navigate = useNavigate()
   const { user } = getAuth()
-  const [logs] = useState(INITIAL_LOGS)
+  const [logs, setLogs] = useState([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterCode, setFilterCode] = useState('Semua')
+
+  // Ambil daftar log audit murni dari GET /api/audit-logs
+  useEffect(() => {
+    let active = true
+    async function loadLogs() {
+      setLoading(true)
+      try {
+        const res = await apiFetch('/api/audit-logs')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          setLogs(list.map(mapApiLog))
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadLogs()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() {
     clearAuth()
@@ -61,16 +86,11 @@ export default function AdminLog() {
   })
 
   function handleDownloadCSV() {
-    const header = 'ID,WAKTU,KODE,AKTOR,ENTITAS,IP,KETERANGAN\n'
-    const rows = filteredLogs
-      .map((l) => `"${l.id}","${l.waktu}","${l.kode}","${l.aktor}","${l.entitas}","${l.ip}","${l.keterangan}"`)
-      .join('\n')
-    const blob = new Blob([header + rows], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `audit-log-wh01-${Date.now()}.csv`
-    a.click()
+    downloadCSV(
+      `audit-log-wh01-${fileStamp()}.csv`,
+      ['ID', 'WAKTU', 'KODE', 'AKTOR', 'ENTITAS', 'IP', 'KETERANGAN'],
+      filteredLogs.map((l) => [l.id, l.waktu, l.kode, l.aktor, l.entitas, l.ip, l.keterangan]),
+    )
   }
 
   return (
@@ -134,24 +154,31 @@ export default function AdminLog() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E5E7EB]">
-              {filteredLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-[#F9FAFB] transition-colors">
-                  <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{log.waktu}</td>
-                  <td className="px-4 py-3">
-                    <Badge variant={CODE_BADGE[log.kode] || 'neutral'}>{log.kode}</Badge>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#111827]">{log.aktor}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#374151]">{log.entitas}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{log.ip}</td>
-                  <td className="px-4 py-3 text-[13px] leading-relaxed text-[#374151]">{log.keterangan}</td>
-                </tr>
-              ))}
-              {filteredLogs.length === 0 && (
+              {loading ? (
                 <tr>
                   <td colSpan={6} className="py-10 text-center text-[13.5px] text-[#6B7280]">
-                    Tidak ada catatan log yang cocok dengan filter.
+                    Memuat data log aktivitas dari server...
                   </td>
                 </tr>
+              ) : filteredLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                    Tidak ada catatan log yang ditemukan di server.
+                  </td>
+                </tr>
+              ) : (
+                filteredLogs.map((log) => (
+                  <tr key={log.id} className="hover:bg-[#F9FAFB] transition-colors">
+                    <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{log.waktu}</td>
+                    <td className="px-4 py-3">
+                      <Badge variant={CODE_BADGE[log.kode] || 'neutral'}>{log.kode}</Badge>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#111827]">{log.aktor}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#374151]">{log.entitas}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{log.ip}</td>
+                    <td className="px-4 py-3 text-[13px] leading-relaxed text-[#374151]">{log.keterangan}</td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

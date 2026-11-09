@@ -3,7 +3,6 @@ import { LogOut, Archive } from 'lucide-react'
 
 export default function Sidebar({
   items,
-  admin = false,
   wide = false,
   logoutIcon,
   activeStyle = 'chip',

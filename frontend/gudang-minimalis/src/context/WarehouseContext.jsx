@@ -1,24 +1,60 @@
-
-import { createContext, useContext, useMemo, useState } from 'react'
-import {
-  APPROVAL_REPORTS,
-  INITIAL_NOTIFICATIONS,
-} from '../data/kepalaGudang'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { apiFetch, unwrapList } from '../lib/auth'
 
 const WarehouseContext = createContext(null)
 
 export function WarehouseProvider({ children }) {
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS)
+  const [notifications, setNotifications] = useState([])
+  const [approvalReports, setApprovalReports] = useState([])
   const [approvedIds, setApprovedIds] = useState(() => new Set())
 
+  useEffect(() => {
+    let active = true
+    async function loadData() {
+      try {
+        const [notifRes, opnRes] = await Promise.all([
+          apiFetch('/api/notifications/'),
+          apiFetch('/api/opnames/'),
+        ])
+        if (active && notifRes.ok) {
+          const list = unwrapList(await notifRes.json().catch(() => null))
+          setNotifications(
+            list.map((n, idx) => ({
+              id: n.id_notifikasi ?? n.id ?? `n-${idx}`,
+              type: String(n.tipe ?? n.jenis ?? 'critical').includes('opname')
+                ? 'approval'
+                : String(n.tipe ?? n.jenis ?? '').includes('laporan')
+                  ? 'report'
+                  : 'critical',
+              title: n.judul ?? n.title ?? 'Notifikasi Sistem',
+              body: n.deskripsi ?? n.pesan ?? n.message ?? '',
+              time: n.waktu ?? n.created_at ?? '-',
+              unread: !(n.dibaca ?? n.is_read ?? false),
+              action: null,
+            }))
+          )
+        }
+        if (active && opnRes.ok) {
+          const opnList = unwrapList(await opnRes.json().catch(() => null))
+          setApprovalReports(opnList)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    loadData()
+    return () => { active = false }
+  }, [])
+
   const unreadCount = notifications.filter((item) => item.unread).length
-  const pendingApprovalCount = APPROVAL_REPORTS.length - approvedIds.size
+  const pendingApprovalCount = Math.max(0, approvalReports.length - approvedIds.size)
 
   const value = useMemo(() => {
     function markAllNotificationsRead() {
       setNotifications((current) =>
         current.map((item) => ({ ...item, unread: false })),
       )
+      apiFetch('/api/notifications/read-all', { method: 'PATCH' }).catch(() => {})
     }
 
     function markNotificationRead(id) {
@@ -27,18 +63,11 @@ export function WarehouseProvider({ children }) {
           item.id === id ? { ...item, unread: false } : item,
         ),
       )
+      apiFetch(`/api/notifications/${id}/read`, { method: 'PATCH' }).catch(() => {})
     }
 
     function approveReport(id) {
       setApprovedIds((current) => new Set(current).add(id))
-      // Laporan yang disetujui otomatis menandai notifikasi persetujuan terkait sebagai dibaca
-      if (id === 'a1') {
-        setNotifications((current) =>
-          current.map((item) =>
-            item.id === 'n2' ? { ...item, unread: false } : item,
-          ),
-        )
-      }
     }
 
     return {
@@ -46,12 +75,12 @@ export function WarehouseProvider({ children }) {
       unreadCount,
       markAllNotificationsRead,
       markNotificationRead,
-      approvalReports: APPROVAL_REPORTS,
+      approvalReports,
       approvedIds,
       approveReport,
       pendingApprovalCount,
     }
-  }, [notifications, unreadCount, approvedIds, pendingApprovalCount])
+  }, [notifications, unreadCount, approvalReports, approvedIds, pendingApprovalCount])
 
   return (
     <WarehouseContext.Provider value={value}>

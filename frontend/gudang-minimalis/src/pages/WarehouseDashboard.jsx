@@ -1,10 +1,10 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AlertTriangle } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Badge from '../components/ui/Badge'
-import { KpiCard } from '../components/ui/Card'
-import { Card, CardHeader, CardBody } from '../components/ui/Card'
-import { getAuth, clearAuth } from '../lib/auth'
+import { KpiCard, Card, CardHeader, CardBody } from '../components/ui/Card'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const menu = [
   { label: 'Beranda', to: '/kepala-gudang' },
@@ -13,54 +13,80 @@ const menu = [
   { label: 'Notifikasi', to: '/kepala-gudang/notifikasi' },
 ]
 
-const METRICS = [
-  {
-    id: 'masuk',
-    label: 'Barang Masuk Hari Ini',
-    value: '312',
-    unit: 'unit',
-    delta: '+47 dari kemarin',
-    deltaGood: true,
-  },
-  {
-    id: 'keluar',
-    label: 'Barang Keluar Hari Ini',
-    value: '198',
-    unit: 'unit',
-    delta: '−12 dari kemarin',
-    deltaGood: false,
-  },
-  {
-    id: 'opname',
-    label: 'Opname Menunggu Persetujuan',
-    value: '3',
-    unit: 'sesi',
-    delta: 'Perlu tindak lanjut',
-    deltaGood: false,
-  },
-  {
-    id: 'sku',
-    label: 'Total SKU Aktif',
-    value: '1.284',
-    unit: 'SKU',
-    delta: '+6 SKU baru minggu ini',
-    deltaGood: true,
-  },
-]
-
-const CRITICAL_STOCK = [
-  { kodeRak: 'A-03', namaBarang: 'Kabel UTP Cat6 (100m)', sku: 'CBL-CAT6-100M', stok: 4, min: 8 },
-  { kodeRak: 'B-11', namaBarang: 'Switch 24-Port Manageable', sku: 'NET-SW24-MG', stok: 1, min: 3 },
-  { kodeRak: 'C-07', namaBarang: 'Baterai AA Alkaline (Pack)', sku: 'BAT-AA-ALK-12', stok: 6, min: 20 },
-  { kodeRak: 'D-02', namaBarang: 'Tinta Printer Epson T664', sku: 'INK-EPS-T664-BK', stok: 2, min: 5 },
-  { kodeRak: 'A-09', namaBarang: 'Selotip Bening 48mm', sku: 'PCK-TAPE-48-CLR', stok: 9, min: 24 },
-]
-
 const TABLE_COLS = ['KODE RAK', 'NAMA BARANG', 'SKU', 'STOK', 'MIN', 'SELISIH', 'STATUS']
 
 export default function WarehouseDashboard() {
   const navigate = useNavigate()
   const { user } = getAuth()
+  const [metrics, setMetrics] = useState([
+    { id: 'masuk', label: 'Barang Masuk Hari Ini', value: '0', unit: 'unit', delta: 'Data dari API', deltaGood: true },
+    { id: 'keluar', label: 'Barang Keluar Hari Ini', value: '0', unit: 'unit', delta: 'Data dari API', deltaGood: false },
+    { id: 'opname', label: 'Opname Menunggu Persetujuan', value: '0', unit: 'sesi', delta: 'Perlu tindak lanjut', deltaGood: false },
+    { id: 'sku', label: 'Total SKU Aktif', value: '0', unit: 'SKU', delta: 'Data inventaris aktif', deltaGood: true },
+  ])
+  const [criticalStock, setCriticalStock] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  // Ambil data dashboard & item kritis murni dari API
+  useEffect(() => {
+    let active = true
+    async function loadDashboard() {
+      setLoading(true)
+      try {
+        const [dashRes, itemsRes, txRes, opnRes] = await Promise.all([
+          apiFetch('/api/dashboard/'),
+          apiFetch('/api/items/'),
+          apiFetch('/api/transactions/'),
+          apiFetch('/api/opnames/'),
+        ])
+        if (!active) return
+
+        const dashPayload = dashRes.ok ? await dashRes.json().catch(() => null) : null
+        const dashData = dashPayload?.data ?? dashPayload ?? {}
+        const itemsList = itemsRes.ok ? unwrapList(await itemsRes.json().catch(() => null)) : []
+        const txList = txRes.ok ? unwrapList(await txRes.json().catch(() => null)) : []
+        const opnList = opnRes.ok ? unwrapList(await opnRes.json().catch(() => null)) : []
+
+        const masukCount = dashData.barang_masuk_hari_ini ?? dashData.total_masuk ?? txList
+          .filter((t) => ['MASUK', 'IN'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
+          .reduce((sum, t) => sum + Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0), 0)
+
+        const keluarCount = dashData.barang_keluar_hari_ini ?? dashData.total_keluar ?? txList
+          .filter((t) => ['KELUAR', 'OUT'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
+          .reduce((sum, t) => sum + Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0), 0)
+
+        const pendingOpn = dashData.opname_menunggu ?? dashData.pending_opnames ?? opnList
+          .filter((o) => !['DISETUJUI', 'DITOLAK', 'FINAL', 'APPROVED', 'REJECTED'].includes(String(o.status ?? '').toUpperCase()))
+          .length
+
+        const totalSku = dashData.total_sku ?? dashData.total_barang ?? itemsList.length
+
+        setMetrics([
+          { id: 'masuk', label: 'Barang Masuk Hari Ini', value: String(masukCount), unit: 'unit', delta: 'Tercatat di server', deltaGood: true },
+          { id: 'keluar', label: 'Barang Keluar Hari Ini', value: String(keluarCount), unit: 'unit', delta: 'Tercatat di server', deltaGood: false },
+          { id: 'opname', label: 'Opname Menunggu Persetujuan', value: String(pendingOpn), unit: 'sesi', delta: pendingOpn > 0 ? 'Perlu tindak lanjut' : 'Semua terverifikasi', deltaGood: pendingOpn === 0 },
+          { id: 'sku', label: 'Total SKU Aktif', value: totalSku.toLocaleString('id-ID'), unit: 'SKU', delta: 'Terdaftar di database', deltaGood: true },
+        ])
+
+        const kritis = itemsList
+          .map((it) => ({
+            kodeRak: it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? '-',
+            namaBarang: it.nama ?? it.nama_barang ?? '-',
+            sku: it.sku ?? it.kode_barang ?? '-',
+            stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
+            min: Number(it.minStok ?? it.batas_stok_minimum ?? 5),
+          }))
+          .filter((it) => it.stok <= it.min)
+        setCriticalStock(kritis)
+      } catch {
+        /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadDashboard()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() {
     clearAuth()
@@ -84,7 +110,7 @@ export default function WarehouseDashboard() {
 
       {/* KPI Grid */}
       <div className="mb-6 grid grid-cols-4 gap-5 max-md:grid-cols-2">
-        {METRICS.map((m) => (
+        {metrics.map((m) => (
           <KpiCard
             key={m.id}
             label={m.label}
@@ -107,7 +133,7 @@ export default function WarehouseDashboard() {
           }
           description="Item dengan stok saat ini ≤ batas minimum — perlu restock segera."
           actions={
-            <Badge variant="danger">{CRITICAL_STOCK.length} item</Badge>
+            <Badge variant="danger">{criticalStock.length} item</Badge>
           }
         />
         <CardBody className="p-0">
@@ -126,37 +152,51 @@ export default function WarehouseDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {CRITICAL_STOCK.map((item) => {
-                  const selisih = item.stok - item.min
-                  return (
-                    <tr
-                      key={item.sku}
-                      className="border-b border-[#E5E7EB] last:border-0 hover:bg-[#F9FAFB]"
-                    >
-                      <td className="px-5 py-3 font-mono text-[13.5px] font-semibold text-[#111827]">
-                        {item.kodeRak}
-                      </td>
-                      <td className="px-5 py-3 text-[13.5px] font-medium text-[#111827]">
-                        {item.namaBarang}
-                      </td>
-                      <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
-                        {item.sku}
-                      </td>
-                      <td className="px-5 py-3">
-                        <Badge variant="danger">{item.stok}</Badge>
-                      </td>
-                      <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
-                        {item.min}
-                      </td>
-                      <td className="px-5 py-3 font-mono text-[13.5px] font-semibold text-red-600">
-                        {selisih}
-                      </td>
-                      <td className="px-5 py-3 text-center">
-                        <Badge variant="danger">KRITIS</Badge>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Memuat data stok kritis dari server...
+                    </td>
+                  </tr>
+                ) : criticalStock.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Tidak ada barang dengan stok kritis saat ini.
+                    </td>
+                  </tr>
+                ) : (
+                  criticalStock.map((item) => {
+                    const selisih = item.stok - item.min
+                    return (
+                      <tr
+                        key={item.sku}
+                        className="border-b border-[#E5E7EB] last:border-0 hover:bg-[#F9FAFB]"
+                      >
+                        <td className="px-5 py-3 font-mono text-[13.5px] font-semibold text-[#111827]">
+                          {item.kodeRak}
+                        </td>
+                        <td className="px-5 py-3 text-[13.5px] font-medium text-[#111827]">
+                          {item.namaBarang}
+                        </td>
+                        <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
+                          {item.sku}
+                        </td>
+                        <td className="px-5 py-3">
+                          <Badge variant="danger">{item.stok}</Badge>
+                        </td>
+                        <td className="px-5 py-3 font-mono text-[13.5px] text-[#6B7280]">
+                          {item.min}
+                        </td>
+                        <td className="px-5 py-3 font-mono text-[13.5px] font-semibold text-red-600">
+                          {selisih}
+                        </td>
+                        <td className="px-5 py-3 text-center">
+                          <Badge variant="danger">KRITIS</Badge>
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
               </tbody>
             </table>
           </div>

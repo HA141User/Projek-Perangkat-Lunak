@@ -1,11 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ScanLine, CheckCircle, X, ArrowRight, QrCode } from 'lucide-react'
 import AppShell from '../components/AppShell'
-import Modal from '../components/ui/Modal'
 import Btn from '../components/ui/Btn'
-import { getAuth, clearAuth, apiFetch } from '../lib/auth'
-import { Store } from '../lib/store'
+import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -16,29 +14,45 @@ const MENU_STAF = [
   { label: 'Riwayat Transaksi', to: '/staff/riwayat' },
 ]
 
-const RAK_OPTIONS = [
-  { kode: 'A-01', nama: 'Kabel UTP Cat6 100m', stok: 18 },
-  { kode: 'A-02', nama: 'Switch Hub 16-Port Gigabit', stok: 3 },
-  { kode: 'B-01', nama: 'Kardus Double Wall A3', stok: 120 },
-  { kode: 'B-02', nama: 'Lakban Bening Heavy Duty', stok: 4 },
-  { kode: 'C-01', nama: 'Kertas Thermal Stiker 100x150', stok: 45 },
-  { kode: 'C-02', nama: 'Barcode Scanner Handheld 2D', stok: 0 },
-  { kode: 'D-01', nama: 'Rompi Keselamatan High-Vis', stok: 22 },
-  { kode: 'D-02', nama: 'Sarung Tangan Karet Grip', stok: 2 },
-]
-
 export default function TransaksiMasuk() {
   const navigate = useNavigate()
   const { user } = getAuth()
 
+  const [rakOptions, setRakOptions] = useState([])
   const [showScanner, setShowScanner] = useState(false)
   const [kodeManual, setKodeManual] = useState('')
   const [selectedRak, setSelectedRak] = useState(null)
   const [jumlah, setJumlah] = useState(10)
-  const [catatan, setCatatan] = useState('Surat Jalan SJ-' + Math.floor(Math.random() * 800 + 100))
+  const [catatan, setCatatan] = useState('')
   const [loading, setLoading] = useState(false)
   const [errorBanner, setErrorBanner] = useState('')
   const [modal, setModal] = useState(null)
+
+  // Ambil daftar barang & lokasi murni dari GET /api/items/
+  useEffect(() => {
+    let active = true
+    async function loadItems() {
+      try {
+        const res = await apiFetch('/api/items/')
+        if (active && res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          setRakOptions(
+            list.map((it, idx) => ({
+              id: it.id_barang ?? it.id ?? idx + 1,
+              kode: String(it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? `A-0${idx + 1}`).replace(/^RAK\s+/i, ''),
+              sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
+              nama: it.nama ?? it.nama_barang ?? '-',
+              stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
+            }))
+          )
+        }
+      } catch {
+        /* biarkan kosong jika gagal */
+      }
+    }
+    loadItems()
+    return () => { active = false }
+  }, [])
 
   function handleLogout() { clearAuth(); navigate('/login') }
 
@@ -49,17 +63,34 @@ export default function TransaksiMasuk() {
     setErrorBanner('')
   }
 
-  function handleGunakanKode() {
-    const q = kodeManual.trim().toUpperCase()
+  async function handleGunakanKode() {
+    const q = kodeManual.trim().toUpperCase().replace(/^RAK\s+/i, '')
     if (!q) return
-    const match = RAK_OPTIONS.find((r) => r.kode === q || r.kode.includes(q))
+    const match = rakOptions.find((r) => r.kode.toUpperCase() === q || r.sku?.toUpperCase() === q || r.kode.toUpperCase().includes(q))
     if (match) {
       handleSelectRak(match)
-    } else {
-      setSelectedRak({ kode: q, nama: 'Barang Logistik Baru', stok: 0 })
-      setShowScanner(false)
-      setErrorBanner('')
+      return
     }
+    try {
+      const res = await apiFetch(`/api/items/by-code/${encodeURIComponent(q)}`)
+      if (res.ok) {
+        const data = await res.json().catch(() => null)
+        const it = data?.data || data
+        if (it && (it.nama || it.nama_barang)) {
+          handleSelectRak({
+            id: it.id_barang ?? it.id ?? 1,
+            kode: String(it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
+            sku: it.sku ?? it.kode_barang ?? q,
+            nama: it.nama ?? it.nama_barang,
+            stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
+          })
+          return
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setErrorBanner(`Kode rak / SKU "${q}" tidak ditemukan di database server.`)
   }
 
   const stokSekarang = selectedRak ? selectedRak.stok : 0
@@ -70,10 +101,27 @@ export default function TransaksiMasuk() {
     setErrorBanner('')
     setLoading(true)
     try {
-      await apiFetch('/api/transactions', {
+      const res = await apiFetch('/api/transactions/masuk', {
         method: 'POST',
-        body: JSON.stringify({ rak: selectedRak.kode, jumlah: Number(jumlah), catatan, type: 'IN' }),
+        body: JSON.stringify({
+          id_barang: selectedRak.id,
+          item_id: selectedRak.id,
+          kode_barang: selectedRak.sku,
+          rak: selectedRak.kode,
+          jumlah: Number(jumlah),
+          kuantitas: Number(jumlah),
+          catatan,
+          keterangan: catatan,
+          type: 'IN',
+        }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.message || err.error || `Gagal menyimpan transaksi (${res.status})`)
+      }
+      setRakOptions((prev) =>
+        prev.map((r) => (r.id === selectedRak.id ? { ...r, stok: stokSetelah } : r))
+      )
       setModal({
         rak: selectedRak.kode,
         nama: selectedRak.nama,
@@ -93,7 +141,7 @@ export default function TransaksiMasuk() {
     setModal(null)
     setSelectedRak(null)
     setKodeManual('')
-    setCatatan('Surat Jalan SJ-' + Math.floor(Math.random() * 800 + 100))
+    setCatatan('')
   }
 
   return (
@@ -142,12 +190,12 @@ export default function TransaksiMasuk() {
               <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-xl bg-white text-[#0037B0] border border-[#E5E7EB]">
                 <QrCode size={24} />
               </div>
-              <p className="text-[14px] font-medium text-[#111827]">Simulasi Pindai Kamera</p>
-              <p className="mt-1 text-[13px] text-[#6B7280]">Klik rak di bawah untuk mensimulasikan pemindaian:</p>
+              <p className="text-[14px] font-medium text-[#111827]">Pindai QR Rak / Barang</p>
+              <p className="mt-1 text-[13px] text-[#6B7280]">Pilih dari daftar item server:</p>
               <div className="mt-3 flex flex-wrap justify-center gap-2">
-                {RAK_OPTIONS.slice(0, 4).map((r) => (
-                  <Btn key={r.kode} variant="secondary" size="sm" onClick={() => handleSelectRak(r)}>
-                    Pindai {r.kode}
+                {rakOptions.slice(0, 6).map((r) => (
+                  <Btn key={`${r.id}-${r.kode}`} variant="secondary" size="sm" onClick={() => handleSelectRak(r)}>
+                    Pindai {r.kode} ({r.sku})
                   </Btn>
                 ))}
               </div>
@@ -156,11 +204,11 @@ export default function TransaksiMasuk() {
 
           {/* Manual input */}
           <div>
-            <label className="mb-2 block text-[13px] font-medium text-[#374151]">Atau pilih / ketik kode rak manual:</label>
+            <label className="mb-2 block text-[13px] font-medium text-[#374151]">Atau pilih / ketik kode rak atau SKU manual:</label>
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Ketik kode rak (misal: A-01)"
+                placeholder="Ketik kode rak atau SKU..."
                 value={kodeManual}
                 onChange={(e) => setKodeManual(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleGunakanKode()}
@@ -170,23 +218,25 @@ export default function TransaksiMasuk() {
             </div>
 
             {/* Quick chips */}
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="text-[12.5px] text-[#6B7280]">Cepat:</span>
-              {RAK_OPTIONS.map((r) => (
-                <button
-                  key={r.kode}
-                  type="button"
-                  onClick={() => handleSelectRak(r)}
-                  className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors ${
-                    selectedRak?.kode === r.kode
-                      ? 'border-[#0037B0] bg-[#0037B0] text-white'
-                      : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#0037B0] hover:text-[#0037B0]'
-                  }`}
-                >
-                  {r.kode}
-                </button>
-              ))}
-            </div>
+            {rakOptions.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-[12.5px] text-[#6B7280]">Dari Server:</span>
+                {rakOptions.map((r) => (
+                  <button
+                    key={`${r.id}-${r.kode}`}
+                    type="button"
+                    onClick={() => handleSelectRak(r)}
+                    className={`rounded-lg border px-3 py-1 text-[12.5px] font-medium transition-colors ${
+                      selectedRak?.id === r.id
+                        ? 'border-[#0037B0] bg-[#0037B0] text-white'
+                        : 'border-[#E5E7EB] bg-white text-[#374151] hover:border-[#0037B0] hover:text-[#0037B0]'
+                    }`}
+                  >
+                    {r.kode} · {r.sku}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
