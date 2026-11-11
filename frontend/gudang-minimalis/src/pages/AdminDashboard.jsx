@@ -17,6 +17,7 @@ import Badge from '../components/ui/Badge'
 import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 import { downloadCSV, fileStamp } from '../lib/csv'
+import { formatDateTime } from '../lib/format'
 
 const menu = [
   { label: 'Beranda', to: '/admin' },
@@ -61,6 +62,7 @@ export default function AdminDashboard() {
   const { user } = getAuth()
   const [activities, setActivities] = useState([])
   const [totalLogCount, setTotalLogCount] = useState(0)
+  const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
 
   // Ambil ringkasan dashboard & log audit terbaru murni dari API
@@ -69,23 +71,37 @@ export default function AdminDashboard() {
     async function loadDashboard() {
       setLoading(true)
       try {
-        const [, logsRes] = await Promise.all([
+        const [dashRes, logsRes] = await Promise.all([
           apiFetch('/api/dashboard/'),
-          apiFetch('/api/audit-logs'),
+          apiFetch('/api/audit-logs?limit=6'),
         ])
-        if (active && logsRes.ok) {
+        if (!active) return
+
+        if (dashRes.ok) {
+          const dashPayload = await dashRes.json().catch(() => null)
+          if (dashPayload && typeof dashPayload === 'object') {
+            setSummary(dashPayload.data ?? dashPayload)
+          }
+        }
+
+        if (logsRes.ok) {
           const payload = await logsRes.json().catch(() => null)
           const list = unwrapList(payload)
-          setTotalLogCount(payload?.total ?? payload?.count ?? list.length)
+          setTotalLogCount(payload?.meta?.total ?? payload?.total ?? payload?.count ?? list.length)
           setActivities(
-            list.slice(0, 6).map((l) => ({
-              code: l.kode ?? l.aksi ?? l.action ?? 'SYSTEM_AUTO',
-              title: l.judul ?? l.title ?? l.keterangan ?? 'Aktivitas Sistem WH-01',
-              time: l.waktu ?? l.created_at ?? 'Baru saja',
-              description: l.keterangan ?? l.deskripsi ?? l.description ?? '',
-              actor: l.aktor ?? l.user_nama ?? l.user?.nama ?? 'Sistem WH-01',
-              meta: `IP: ${l.ip ?? l.ip_address ?? '-'} · ${l.entitas ?? l.target ?? 'WH-01'}`,
-            }))
+            list.slice(0, 6).map((l) => {
+              const code = l.kode ?? l.aksi ?? l.action ?? 'SYSTEM_AUTO'
+              const ent = l.entitas ?? l.entitas_terkait ?? l.target ?? 'WH-01'
+              const entId = l.entitas_id ? ` #${l.entitas_id}` : ''
+              return {
+                code,
+                title: l.judul ?? l.title ?? `${code} (${ent}${entId})`,
+                time: formatDateTime(l.waktu ?? l.created_at),
+                description: l.keterangan ?? l.deskripsi ?? l.description ?? `Aksi ${code} pada entitas ${ent}${entId}`,
+                actor: l.aktor ?? l.nama_user ?? l.user_nama ?? l.user?.nama ?? 'Sistem WH-01',
+                meta: `IP: ${l.ip ?? l.ip_address ?? '-'} · ${ent}${entId}`,
+              }
+            })
           )
         }
       } catch {
@@ -127,12 +143,23 @@ export default function AdminDashboard() {
       pageTitle="Ringkasan Sistem & Administrasi"
     >
       {/* Section heading */}
-      <div className="mb-6">
-        <h2 className="text-[20px] font-semibold text-[#111827]">Dashboard Admin</h2>
-        <p className="mt-1 text-[14px] text-[#6B7280]">
-          Selamat datang, {user?.name || 'Admin'}. Berikut ringkasan status operasional real-time
-          dan aktivitas pengguna terkini dari server backend.
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="text-[20px] font-semibold text-[#111827]">Dashboard Admin</h2>
+          <p className="mt-1 text-[14px] text-[#6B7280]">
+            Selamat datang, {user?.name || 'Admin'}. Berikut ringkasan status operasional real-time
+            dan aktivitas pengguna terkini dari server backend.
+          </p>
+        </div>
+        {summary && (
+          <div className="flex flex-wrap gap-2 text-[12.5px]">
+            <Badge variant="info">{summary.total_barang ?? 0} SKU Terdaftar</Badge>
+            <Badge variant="neutral">{Number(summary.total_stok ?? 0).toLocaleString('id-ID')} Total Unit</Badge>
+            <Badge variant={(summary.jumlah_barang_kritis ?? 0) > 0 ? 'danger' : 'success'}>
+              {summary.jumlah_barang_kritis ?? 0} Stok Kritis
+            </Badge>
+          </div>
+        )}
       </div>
 
       {/* Main grid */}
@@ -185,7 +212,7 @@ export default function AdminDashboard() {
                 className="mt-2 inline-flex cursor-pointer items-center gap-1.5 text-[13px] font-medium text-[#0037B0] hover:underline"
               >
                 <Download size={13} />
-                Unduh Template XLSX
+                Unduh Template .CSV
               </button>
             </div>
           </CardBody>

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { Plus, Search, QrCode, Trash2, Grid2X2, Printer, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react'
+import { Plus, Search, QrCode, Trash2, Grid2X2, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
@@ -9,6 +9,7 @@ import QrLabelModal from '../components/QrLabelModal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -24,19 +25,17 @@ const MENU_ADMIN = [
 // ─── Master zona: huruf zona = huruf pada kode rak ─────────────────────────
 const ZONA = [
   { huruf: 'A', value: 'Zona A - Elektronik', label: 'Zona A - Elektronik & High-Value' },
-  { huruf: 'B', value: 'Zona B - Packaging & Logistik', label: 'Zona B - Packaging & Dus Logistik' },
-  { huruf: 'C', value: 'Zona C - ATK & Stiker Thermal', label: 'Zona C - ATK & Stiker Thermal' },
+  { huruf: 'B', value: 'Zona B - Packaging & Logistik', label: 'Zona B - Packaging & Logistik' },
+  { huruf: 'C', value: 'Zona C - ATK & Kebersihan', label: 'Zona C - ATK & Kebersihan' },
   { huruf: 'D', value: 'Zona D - Peralatan K3 & Safety', label: 'Zona D - Peralatan K3 & Safety' },
 ]
 
-// ─── Aturan validasi ───────────────────────────────────────────────────────
-const KODE_REGEX = /^RAK ([A-Z])-(\d{2})$/ // contoh: RAK B-03
+const KODE_REGEX = /^RAK\s+([A-Z])-(\d{2})$/i
 const KAPASITAS_MIN = 1
 const KAPASITAS_MAX = 10_000
 const CATATAN_MAX = 150
 const BLOCKED_KEYS = ['e', 'E', '+', '-', '.', ',']
 
-/** Rapikan input kode: huruf besar, spasi tunggal, "RAKA-01" → "RAK A-01" */
 function normalizeKode(raw) {
   let s = String(raw ?? '').toUpperCase().replace(/\s+/g, ' ').trimStart()
   s = s.replace(/^RAK(?=[A-Z])/, 'RAK ')
@@ -45,22 +44,24 @@ function normalizeKode(raw) {
 
 const zonaByValue = (value) => ZONA.find((z) => z.value === value)
 
-function mapApiLocation(loc, idx = 0) {
-  const rawKode = loc.nama_rak ?? loc.kode_lokasi ?? loc.kode ?? loc.nama_lokasi ?? loc.name ?? `RAK A-0${idx + 1}`
-  const kode = normalizeKode(String(rawKode).toUpperCase().startsWith('RAK') ? rawKode : `RAK ${rawKode}`)
-  const huruf = KODE_REGEX.exec(kode)?.[1] ?? 'A'
+function mapApiLocation(loc, stockByLocation = {}, idx = 0) {
+  const id = loc.id_lokasi ?? loc.id ?? idx + 1
+  const rawKode = String(loc.nama_rak ?? loc.kode_lokasi ?? loc.kode ?? loc.nama_lokasi ?? loc.name ?? `Rak A${idx + 1}`).trim()
+  const hurufMatch = /RAK\s*([A-Z])/i.exec(rawKode)
+  const huruf = hurufMatch?.[1]?.toUpperCase() ?? 'A'
   const matchedZona = ZONA.find((z) => z.huruf === huruf)?.value ?? ZONA[0].value
+  const terisiServer = loc.terisi ?? loc.occupied
+  const terisi = terisiServer !== undefined ? Number(terisiServer) : (stockByLocation[id] ?? 0)
   return {
-    id: loc.id_lokasi ?? loc.id ?? idx + 1,
-    kode,
+    id,
+    kode: rawKode,
     zona: loc.zona ?? loc.deskripsi ?? matchedZona,
-    kapasitas: Number(loc.kapasitas ?? loc.capacity ?? 50),
-    terisi: Number(loc.terisi ?? loc.occupied ?? 0),
+    kapasitas: Number(loc.kapasitas ?? loc.capacity ?? 100),
+    terisi,
     keterangan: loc.keterangan ?? loc.catatan ?? '',
   }
 }
 
-/** Status dihitung dari tingkat keterisian, bukan diketik manual */
 function hitungStatus(terisi, kapasitas) {
   const pct = kapasitas > 0 ? (terisi / kapasitas) * 100 : 0
   if (pct >= 100) return 'Penuh'
@@ -68,7 +69,6 @@ function hitungStatus(terisi, kapasitas) {
   return 'Tersedia'
 }
 
-/** Kode berikutnya yang belum terpakai di zona tersebut: RAK {huruf}-{NN} */
 function generateKode(zonaValue, raks) {
   const huruf = zonaByValue(zonaValue)?.huruf ?? 'A'
   const used = new Set(raks.map((r) => r.kode.toUpperCase()))
@@ -91,9 +91,9 @@ function validateRak(form, raks) {
     const m = KODE_REGEX.exec(kode)
     if (!m) errors.kode = 'Format harus "RAK X-NN", contoh: RAK B-03.'
     else if (m[2] === '00') errors.kode = 'Nomor rak dimulai dari 01.'
-    else if (zona && m[1] !== zona.huruf)
+    else if (zona && m[1].toUpperCase() !== zona.huruf)
       errors.kode = `Huruf rak harus "${zona.huruf}" karena berada di ${zona.value.split(' - ')[0]}.`
-    else if (raks.some((r) => r.kode.toUpperCase() === kode))
+    else if (raks.some((r) => r.kode.toUpperCase() === kode.toUpperCase()))
       errors.kode = `Kode ${kode} sudah terdaftar. Gunakan nomor lain.`
   }
 
@@ -103,8 +103,8 @@ function validateRak(form, raks) {
     const n = Number(kap)
     if (!Number.isFinite(n)) errors.kapasitas = 'Kapasitas harus berupa angka.'
     else if (!Number.isInteger(n)) errors.kapasitas = 'Kapasitas harus bilangan bulat.'
-    else if (n < KAPASITAS_MIN) errors.kapasitas = `Kapasitas minimal ${KAPASITAS_MIN} box.`
-    else if (n > KAPASITAS_MAX) errors.kapasitas = `Kapasitas maksimal ${KAPASITAS_MAX.toLocaleString('id-ID')} box.`
+    else if (n < KAPASITAS_MIN) errors.kapasitas = `Kapasitas minimal ${KAPASITAS_MIN} unit.`
+    else if (n > KAPASITAS_MAX) errors.kapasitas = `Kapasitas maksimal ${KAPASITAS_MAX.toLocaleString('id-ID')} unit.`
   }
 
   if (form.keterangan.trim().length > CATATAN_MAX) errors.keterangan = `Catatan maksimal ${CATATAN_MAX} karakter.`
@@ -135,24 +135,50 @@ export default function AdminRak() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [qrModalRak, setQrModalRak] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [formData, setFormData] = useState({ kode: '', zona: ZONA[0].value, kapasitas: '50', keterangan: '' })
+  const [formData, setFormData] = useState({ kode: '', zona: ZONA[0].value, kapasitas: '100', keterangan: '' })
   const [kodeAuto, setKodeAuto] = useState(true)
   const [touched, setTouched] = useState({})
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [pageError, setPageError] = useState('')
   const [toast, setToast] = useState('')
+  const toastTimerRef = useRef(null)
 
-  // Ambil daftar lokasi rak murni dari GET /api/locations/
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    }
+  }, [])
+
+  // Ambil daftar lokasi rak dari GET /api/locations/ & hitung stok terisi dari GET /api/items/
   useEffect(() => {
     let active = true
     async function loadLocations() {
       setLoading(true)
       try {
-        const res = await apiFetch('/api/locations/')
-        if (!res.ok) return
-        const list = unwrapList(await res.json().catch(() => null))
-        if (active && Array.isArray(list)) {
-          setRaks(list.map(mapApiLocation))
+        const [locRes, itemsRes] = await Promise.all([
+          apiFetch('/api/locations/'),
+          apiFetch('/api/items/'),
+        ])
+        if (!active) return
+
+        const stockByLoc = {}
+        if (itemsRes.ok) {
+          const itemsList = unwrapList(await itemsRes.json().catch(() => null))
+          itemsList.forEach((it) => {
+            const locId = it.lokasi_id ?? it.lokasi?.id_lokasi
+            if (locId) {
+              stockByLoc[locId] = (stockByLoc[locId] ?? 0) + Number(it.stok_saat_ini ?? it.stok ?? 0)
+            }
+          })
+        }
+
+        if (locRes.ok) {
+          const list = unwrapList(await locRes.json().catch(() => null))
+          if (Array.isArray(list)) {
+            setRaks(list.map((loc, idx) => mapApiLocation(loc, stockByLoc, idx)))
+          }
         }
       } finally {
         if (active) setLoading(false)
@@ -170,7 +196,8 @@ export default function AdminRak() {
   const filteredRaks = raks.filter(
     (r) =>
       r.kode.toLowerCase().includes(search.toLowerCase()) ||
-      r.zona.toLowerCase().includes(search.toLowerCase())
+      r.zona.toLowerCase().includes(search.toLowerCase()) ||
+      r.keterangan.toLowerCase().includes(search.toLowerCase())
   )
 
   const errors = useMemo(() => validateRak(formData, raks), [formData, raks])
@@ -179,22 +206,24 @@ export default function AdminRak() {
 
   function showToast(msg) {
     setToast(msg)
-    setTimeout(() => setToast(''), 4000)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToast(''), 4000)
   }
 
   function handleOpenCreate() {
     const zona = ZONA[0].value
-    setFormData({ kode: generateKode(zona, raks), zona, kapasitas: '50', keterangan: '' })
+    setFormData({ kode: generateKode(zona, raks), zona, kapasitas: '100', keterangan: '' })
     setKodeAuto(true)
     setTouched({})
     setSubmitted(false)
+    setSubmitError('')
     setIsModalOpen(true)
   }
 
   function updateField(key, value) {
+    setSubmitError('')
     setFormData((f) => {
       const next = { ...f, [key]: value }
-      // Kode otomatis mengikuti zona selama belum diubah manual
       if (key === 'zona' && kodeAuto) next.kode = generateKode(value, raks)
       return next
     })
@@ -218,17 +247,27 @@ export default function AdminRak() {
   async function confirmDelete() {
     if (!deleteTarget || deleteTarget.terisi > 0) return
     const target = deleteTarget
-    const res = await apiFetch(`/api/locations/${target.id}`, { method: 'DELETE' })
-    if (res.ok) {
-      setRaks((prev) => prev.filter((r) => r.id !== target.id))
-      showToast(`Rak ${target.kode} berhasil dihapus.`)
+    setPageError('')
+    try {
+      const res = await apiFetch(`/api/locations/${target.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setPageError(extractApiError(err, `Gagal menghapus rak ${target.kode} (${res.status})`))
+      } else {
+        setRaks((prev) => prev.filter((r) => r.id !== target.id))
+        showToast(`Rak ${target.kode} berhasil dihapus.`)
+      }
+    } catch {
+      setPageError(`Gagal terhubung ke server saat menghapus rak ${target.kode}.`)
+    } finally {
+      setDeleteTarget(null)
     }
-    setDeleteTarget(null)
   }
 
   async function handleSubmit(e) {
     e?.preventDefault?.()
     setSubmitted(true)
+    setSubmitError('')
     if (!isValid) return
 
     const kode = formData.kode.trim()
@@ -240,28 +279,31 @@ export default function AdminRak() {
       const res = await apiFetch('/api/locations/', {
         method: 'POST',
         body: JSON.stringify({
-          kode,
-          kode_lokasi: kode.replace(/^RAK\s+/i, ''),
-          nama_lokasi: kode,
-          zona: formData.zona,
-          deskripsi: keterangan || formData.zona,
-          kapasitas,
-          keterangan,
+          nama_rak: kode,
+          keterangan: keterangan || formData.zona,
         }),
       })
       const created = await res.json().catch(() => null)
-      const newId = created?.data?.id_lokasi ?? created?.data?.id ?? created?.id ?? Date.now()
+      if (!res.ok) {
+        throw new Error(extractApiError(created, `Gagal mendaftarkan rak (${res.status})`))
+      }
+      const newId = created?.id_lokasi ?? created?.data?.id_lokasi ?? created?.data?.id ?? created?.id
+      if (!newId) {
+        throw new Error('Server tidak mengembalikan ID lokasi rak.')
+      }
       const newRak = {
         id: newId,
-        kode,
+        kode: created?.nama_rak ?? kode,
         zona: formData.zona,
         kapasitas,
-        keterangan,
+        keterangan: created?.keterangan ?? (keterangan || formData.zona),
         terisi: 0,
       }
       setRaks((prev) => [newRak, ...prev])
       setIsModalOpen(false)
       showToast(`Rak ${newRak.kode} berhasil didaftarkan di ${newRak.zona}.`)
+    } catch (err) {
+      setSubmitError(err.message || 'Gagal menyimpan lokasi rak.')
     } finally {
       setSaving(false)
     }
@@ -283,6 +325,13 @@ export default function AdminRak() {
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] text-emerald-800">
           <CheckCircle2 size={16} />
           {toast}
+        </div>
+      )}
+
+      {pageError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+          <AlertTriangle size={16} />
+          {pageError}
         </div>
       )}
 
@@ -337,11 +386,11 @@ export default function AdminRak() {
                       {rak.zona}
                       {rak.keterangan && <span className="block text-[12px] text-[#6B7280]">{rak.keterangan}</span>}
                     </td>
-                    <td className="px-4 py-3 text-[13.5px] text-[#111827]">{rak.kapasitas} box</td>
+                    <td className="px-4 py-3 text-[13.5px] text-[#111827]">{rak.kapasitas} unit</td>
                     <td className="px-4 py-3 min-w-[140px]">
                       <div className="flex flex-col gap-1">
                         <div className="flex justify-between text-[12px] text-[#6B7280]">
-                          <span>{rak.terisi}/{rak.kapasitas} box</span>
+                          <span>{rak.terisi}/{rak.kapasitas} unit</span>
                           <span>{pct}%</span>
                         </div>
                         <div className="h-2 rounded-full bg-[#E5E7EB]">
@@ -400,6 +449,13 @@ export default function AdminRak() {
               Masih ada {Object.keys(errors).length} isian yang belum sesuai. Periksa kolom bertanda merah.
             </div>
           )}
+
+          {submitError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
+              {submitError}
+            </div>
+          )}
+
           <div className="grid gap-4">
             <Field label="Zonasi Area Gudang" required error={showErr('zona')}>
               <Select value={formData.zona} onChange={(e) => updateField('zona', e.target.value)}>
@@ -442,7 +498,7 @@ export default function AdminRak() {
             </Field>
 
             <Field
-              label="Kapasitas Maksimal (Box / Dus)"
+              label="Kapasitas Maksimal (Unit)"
               required
               error={showErr('kapasitas')}
               hint={`Bilangan bulat ${KAPASITAS_MIN}–${KAPASITAS_MAX.toLocaleString('id-ID')}`}
@@ -469,7 +525,7 @@ export default function AdminRak() {
               <Input
                 type="text"
                 maxLength={CATATAN_MAX}
-                placeholder="Misal: 200cm x 100cm x 50cm"
+                placeholder="Misal: Lantai 1 - Elektronik"
                 value={formData.keterangan}
                 className={showErr('keterangan') ? errCls : ''}
                 onChange={(e) => updateField('keterangan', e.target.value)}
@@ -501,7 +557,7 @@ export default function AdminRak() {
       >
         <p className="text-[13.5px] leading-relaxed text-[#374151]">
           {deleteTarget?.terisi > 0
-            ? `Rak ini masih menyimpan ${deleteTarget.terisi} box barang. Pindahkan seluruh barang ke rak lain terlebih dahulu sebelum menghapus lokasi rak.`
+            ? `Rak ini masih menyimpan ${deleteTarget.terisi} unit barang. Pindahkan seluruh barang ke rak lain terlebih dahulu sebelum menghapus lokasi rak.`
             : 'Rak kosong ini akan dihapus permanen beserta stiker QR-nya. Tindakan ini tidak dapat dibatalkan.'}
         </p>
       </Modal>
@@ -514,7 +570,7 @@ export default function AdminRak() {
         code={qrModalRak?.kode ?? 'RAK A-12'}
         zone={`KORIDOR ${qrModalRak?.kode?.slice(-2) || '01'} • ${qrModalRak?.zona?.toUpperCase() || 'ZONA A'}`}
         uid={`WH-01 • UID: BIN-${qrModalRak?.kode?.replace(/\s+/g, '') || 'A12'}-2024`}
-        extraInfo={`Kapasitas Maks: ${qrModalRak?.kapasitas || 50} Dus`}
+        extraInfo={`Kapasitas Maks: ${qrModalRak?.kapasitas || 100} Unit`}
       />
     </AppShell>
   )

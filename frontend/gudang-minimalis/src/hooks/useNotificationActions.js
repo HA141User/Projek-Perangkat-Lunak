@@ -1,27 +1,29 @@
-
 import { useNavigate } from 'react-router'
 import { useWarehouse } from '../context/WarehouseContext'
 
 export default function useNotificationActions() {
   const navigate = useNavigate()
-  const { markNotificationRead, approveReport } = useWarehouse()
+  const { markNotificationRead } = useWarehouse()
 
   return function handleNotificationAction(item) {
-    if (item.id === 'n1') {
-      markNotificationRead('n1')
-      if (document.getElementById('stok-kritis')) {
-        document.getElementById('stok-kritis').scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        })
-        return
-      }
-      navigate('/kepala-gudang')
+    if (item?.id) {
+      markNotificationRead(item.id)
+    }
+
+    if (item?.type === 'approval') {
+      navigate('/kepala-gudang/persetujuan')
+      return
+    }
+    if (item?.type === 'report') {
+      navigate('/kepala-gudang/laporan')
       return
     }
 
-    if (item.id === 'n2') {
-      approveReport('a1')
+    const kritisEl = document.getElementById('stok-kritis')
+    if (kritisEl) {
+      kritisEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
     }
+    navigate('/kepala-gudang')
   }
 }

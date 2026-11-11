@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { CalendarClock, Plus, Play, Edit2, Trash2, CheckCircle2, AlertTriangle } from 'lucide-react'
 import AppShell from '../components/AppShell'
@@ -7,6 +7,7 @@ import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -25,7 +26,21 @@ const TIPE_OPTIONS = [
   'Rekonsiliasi Opname & Audit Trail',
 ]
 
+const TIPE_TO_API = {
+  'Mutasi Barang Masuk & Keluar': 'transaksi',
+  'Daftar Barang Stok < Ambang Batas': 'stok',
+  'Rekonsiliasi Opname & Audit Trail': 'opname',
+}
+const API_TO_TIPE = Object.fromEntries(Object.entries(TIPE_TO_API).map(([k, v]) => [v, k]))
+
 const FREKUENSI_OPTIONS = ['Harian', 'Mingguan (Senin)', 'Bulanan (Tgl 1)']
+const FREK_TO_API = {
+  Harian: 'harian',
+  'Mingguan (Senin)': 'mingguan',
+  'Bulanan (Tgl 1)': 'bulanan',
+}
+const API_TO_FREK = Object.fromEntries(Object.entries(FREK_TO_API).map(([k, v]) => [v, k]))
+
 const FORMAT_OPTIONS = ['PDF & XLSX', 'PDF', 'XLSX']
 
 const EMPTY_FORM = {
@@ -44,35 +59,30 @@ const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/
 
 const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
 
-/** Ekstrak HH:mm dari format "17:30 WIB" atau "17:30" */
 function extractTime(jamStr) {
   const m = /(\d{2}:\d{2})/.exec(String(jamStr ?? ''))
   return m ? m[1] : '08:00'
 }
 
 function mapApiSchedule(s, idx = 0) {
-  const rawJam = s.jam ?? s.waktu ?? s.time ?? '08:00'
-  const jam = String(rawJam).includes('WIB') ? rawJam : `${extractTime(rawJam)} WIB`
-  const penerima = Array.isArray(s.penerima) ? s.penerima.join(', ') : (s.penerima ?? s.emails ?? s.recipients ?? '')
-  const isAktif = typeof s.aktif === 'boolean' ? s.aktif : (s.is_active !== false && s.status !== 'Dijeda' && s.status !== 'PAUSED')
+  const rawJam = s.waktu_eksekusi ?? s.jam ?? s.waktu ?? s.time ?? '08:00'
+  const jam = `${extractTime(rawJam)} WIB`
+  const tipeRaw = s.jenis_laporan ?? s.tipe
+  const frekRaw = s.frekuensi ?? s.periode
+  const rawAktif = s.status_aktif ?? s.aktif ?? s.is_active
+  const isAktif =
+    typeof rawAktif === 'boolean' ? rawAktif : s.status !== 'Dijeda' && s.status !== 'PAUSED'
   return {
     id: s.id_jadwal ?? s.id ?? idx + 1,
-    nama: s.nama ?? s.nama_jadwal ?? s.name ?? `Jadwal Laporan #${idx + 1}`,
-    tipe: s.tipe ?? s.jenis_laporan ?? TIPE_OPTIONS[0],
-    frekuensi: s.frekuensi ?? s.periode ?? 'Harian',
+    nama: s.nama_jadwal ?? s.nama ?? s.name ?? `Jadwal ${API_TO_TIPE[tipeRaw] ?? `#${s.id_jadwal ?? idx + 1}`}`,
+    tipe: API_TO_TIPE[tipeRaw] ?? (TIPE_OPTIONS.includes(tipeRaw) ? tipeRaw : TIPE_OPTIONS[0]),
+    frekuensi: API_TO_FREK[frekRaw] ?? (FREKUENSI_OPTIONS.includes(frekRaw) ? frekRaw : 'Harian'),
     jam,
     format: s.format ?? 'PDF & XLSX',
-    penerima,
+    penerima: s.email_penerima ?? (Array.isArray(s.penerima) ? s.penerima[0] : s.penerima) ?? '',
     status: isAktif ? 'Aktif' : 'Dijeda',
     terakhirJalan: s.terakhirJalan ?? s.last_run ?? 'Terjadwal di sistem',
   }
-}
-
-function parseEmails(raw) {
-  return String(raw ?? '')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean)
 }
 
 function validateSchedule(form, schedules, editingId) {
@@ -94,16 +104,13 @@ function validateSchedule(form, schedules, editingId) {
   if (!form.jam) errors.jam = 'Jam trigger wajib diisi.'
   else if (!TIME_REGEX.test(form.jam)) errors.jam = 'Format jam harus HH:MM (00:00–23:59).'
 
-  const emails = parseEmails(form.penerima)
-  if (emails.length === 0) {
-    errors.penerima = 'Minimal 1 email penerima wajib diisi.'
-  } else {
-    const invalid = emails.find((e) => !EMAIL_REGEX.test(e))
-    if (invalid) {
-      errors.penerima = `Format email tidak valid: "${invalid}".`
-    } else if (new Set(emails).size !== emails.length) {
-      errors.penerima = 'Terdapat alamat email yang duplikat di daftar penerima.'
-    }
+  const email = form.penerima.trim().toLowerCase()
+  if (!email) {
+    errors.penerima = 'Email penerima wajib diisi.'
+  } else if (!EMAIL_REGEX.test(email)) {
+    errors.penerima = 'Format harus 1 alamat email yang valid (contoh: operasional@perusahaan.com).'
+  } else if (email.length > 150) {
+    errors.penerima = 'Email maksimal 150 karakter.'
   }
 
   return errors
@@ -120,12 +127,20 @@ export default function AdminLaporanOtomatis() {
   const [editingItem, setEditingItem] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [toast, setToast] = useState('')
+  const [pageError, setPageError] = useState('')
+  const [submitError, setSubmitError] = useState('')
   const [formData, setFormData] = useState(EMPTY_FORM)
   const [touched, setTouched] = useState({})
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
+  const toastTimerRef = useRef(null)
 
-  // Ambil daftar jadwal murni dari GET /api/schedules/
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    }
+  }, [])
+
   useEffect(() => {
     let active = true
     async function loadSchedules() {
@@ -152,7 +167,8 @@ export default function AdminLaporanOtomatis() {
 
   function showToast(msg) {
     setToast(msg)
-    setTimeout(() => setToast(''), 4000)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToast(''), 4000)
   }
 
   const errors = useMemo(
@@ -167,6 +183,7 @@ export default function AdminLaporanOtomatis() {
     setFormData(EMPTY_FORM)
     setTouched({})
     setSubmitted(false)
+    setSubmitError('')
     setIsModalOpen(true)
   }
 
@@ -182,10 +199,12 @@ export default function AdminLaporanOtomatis() {
     })
     setTouched({})
     setSubmitted(false)
+    setSubmitError('')
     setIsModalOpen(true)
   }
 
   function updateField(key, value) {
+    setSubmitError('')
     setFormData((f) => ({ ...f, [key]: value }))
     setTouched((t) => ({ ...t, [key]: true }))
   }
@@ -193,59 +212,87 @@ export default function AdminLaporanOtomatis() {
   async function confirmDelete() {
     if (!deleteTarget) return
     const target = deleteTarget
-    const res = await apiFetch(`/api/schedules/${target.id}`, { method: 'DELETE' })
-    if (res.ok) {
-      setSchedules((prev) => prev.filter((s) => s.id !== target.id))
-      showToast(`Jadwal "${target.nama}" berhasil dihapus.`)
+    setPageError('')
+    try {
+      const res = await apiFetch(`/api/schedules/${target.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setPageError(extractApiError(err, `Gagal menghapus jadwal (${res.status})`))
+      } else {
+        setSchedules((prev) => prev.filter((s) => s.id !== target.id))
+        showToast(`Jadwal "${target.nama}" berhasil dihapus.`)
+      }
+    } catch {
+      setPageError('Gagal terhubung ke server saat menghapus jadwal.')
+    } finally {
+      setDeleteTarget(null)
     }
-    setDeleteTarget(null)
   }
 
   async function handleToggleStatus(item) {
-    const nextStatus = item.status === 'Aktif' ? 'Dijeda' : 'Aktif'
-    const res = await apiFetch(`/api/schedules/${item.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: nextStatus, aktif: nextStatus === 'Aktif', is_active: nextStatus === 'Aktif' }),
-    })
-    if (res.ok) {
+    const nextAktif = item.status !== 'Aktif'
+    const nextStatus = nextAktif ? 'Aktif' : 'Dijeda'
+    setPageError('')
+    try {
+      const res = await apiFetch(`/api/schedules/${item.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status_aktif: nextAktif }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setPageError(extractApiError(err, `Gagal mengubah status jadwal (${res.status})`))
+        return
+      }
       setSchedules((prev) =>
         prev.map((s) => (s.id === item.id ? { ...s, status: nextStatus } : s))
       )
+      showToast(`Jadwal "${item.nama}" kini ${nextStatus}.`)
+    } catch {
+      setPageError('Gagal mengubah status jadwal di server.')
     }
   }
 
   async function handleTriggerNow(item) {
-    const res = await apiFetch('/api/cronjob')
-    if (res.ok) {
+    setPageError('')
+    try {
+      const res = await apiFetch('/api/cronjob')
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setPageError(extractApiError(err, `Gagal memicu cronjob (${res.status})`))
+        return
+      }
       const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':')
       setSchedules((prev) =>
         prev.map((s) => (s.id === item.id ? { ...s, terakhirJalan: `Baru saja, ${now} WIB (Sukses)` } : s))
       )
-      showToast(`Trigger manual berhasil dikirim! Menjalankan: "${item.nama}"...`)
+      showToast(`Trigger manual berhasil dikirim! Menjalankan eksekusi jadwal...`)
+    } catch {
+      setPageError('Gagal memicu cronjob pada server.')
     }
   }
 
   async function handleSubmit(e) {
     e?.preventDefault?.()
     setSubmitted(true)
+    setSubmitError('')
     if (!isValid) return
 
-    const emailList = parseEmails(formData.penerima)
+    const email = formData.penerima.trim().toLowerCase()
     const clean = {
       nama: formData.nama.trim().replace(/\s+/g, ' '),
       tipe: formData.tipe,
       frekuensi: formData.frekuensi,
       jam: `${formData.jam} WIB`,
       format: formData.format,
-      penerima: emailList.join(', '),
+      penerima: email,
     }
 
     const apiBody = {
-      ...clean,
-      nama_jadwal: clean.nama,
-      jenis_laporan: clean.tipe,
-      waktu: formData.jam,
-      emails: emailList,
+      jenis_laporan: TIPE_TO_API[clean.tipe] ?? 'transaksi',
+      frekuensi: FREK_TO_API[clean.frekuensi] ?? 'harian',
+      waktu_eksekusi: formData.jam,
+      email_penerima: email,
+      status_aktif: true,
     }
 
     setSaving(true)
@@ -255,33 +302,39 @@ export default function AdminLaporanOtomatis() {
           method: 'PATCH',
           body: JSON.stringify(apiBody),
         })
-        if (res.ok) {
-          setSchedules((prev) => prev.map((s) => (s.id === editingItem.id ? { ...s, ...clean } : s)))
-          showToast(`Jadwal "${clean.nama}" berhasil diperbarui.`)
-          setIsModalOpen(false)
+        const updated = await res.json().catch(() => null)
+        if (!res.ok) {
+          throw new Error(extractApiError(updated, `Gagal memperbarui jadwal (${res.status})`))
         }
+        setSchedules((prev) => prev.map((s) => (s.id === editingItem.id ? { ...s, ...clean } : s)))
+        showToast(`Jadwal "${clean.nama}" berhasil diperbarui.`)
+        setIsModalOpen(false)
       } else {
         const res = await apiFetch('/api/schedules/', {
           method: 'POST',
           body: JSON.stringify(apiBody),
         })
-        if (res.ok) {
-          const created = await res.json().catch(() => null)
-          const newId = created?.data?.id_jadwal ?? created?.data?.id ?? created?.id ?? Date.now()
-          setSchedules((prev) => [
-            { id: newId, ...clean, status: 'Aktif', terakhirJalan: 'Belum pernah dijalankan' },
-            ...prev,
-          ])
-          showToast(`Jadwal baru "${clean.nama}" berhasil dibuat.`)
-          setIsModalOpen(false)
+        const created = await res.json().catch(() => null)
+        if (!res.ok) {
+          throw new Error(extractApiError(created, `Gagal membuat jadwal (${res.status})`))
         }
+        const newId = created?.id_jadwal ?? created?.data?.id_jadwal ?? created?.data?.id ?? created?.id
+        if (!newId) {
+          throw new Error('Server tidak mengembalikan ID jadwal.')
+        }
+        setSchedules((prev) => [
+          { id: newId, ...clean, status: 'Aktif', terakhirJalan: 'Belum pernah dijalankan' },
+          ...prev,
+        ])
+        showToast(`Jadwal baru "${clean.nama}" berhasil dibuat.`)
+        setIsModalOpen(false)
       }
+    } catch (err) {
+      setSubmitError(err.message || 'Gagal menyimpan jadwal laporan.')
     } finally {
       setSaving(false)
     }
   }
-
-  const recipientCount = parseEmails(formData.penerima).length
 
   return (
     <AppShell
@@ -302,6 +355,13 @@ export default function AdminLaporanOtomatis() {
         </div>
       )}
 
+      {pageError && (
+        <div className="mb-5 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+          <AlertTriangle size={16} />
+          {pageError}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4">
         {loading && (
           <div className="rounded-xl border border-[#E5E7EB] bg-white p-10 text-center text-[13.5px] text-[#6B7280]">
@@ -318,7 +378,6 @@ export default function AdminLaporanOtomatis() {
             key={s.id}
             className="rounded-xl border border-[#E5E7EB] bg-white p-5"
           >
-            {/* Header row */}
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#EFF6FF] text-[#0037B0]">
@@ -345,7 +404,6 @@ export default function AdminLaporanOtomatis() {
               </div>
             </div>
 
-            {/* Detail grid */}
             <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 border-t border-[#E5E7EB] pt-4 md:grid-cols-4">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7280]">Frekuensi</p>
@@ -393,6 +451,12 @@ export default function AdminLaporanOtomatis() {
           {submitted && !isValid && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
               Masih ada {Object.keys(errors).length} isian yang belum sesuai. Periksa kolom bertanda merah.
+            </div>
+          )}
+
+          {submitError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
+              {submitError}
             </div>
           )}
 
@@ -448,13 +512,14 @@ export default function AdminLaporanOtomatis() {
           </Field>
 
           <Field
-            label="Daftar Email Penerima"
+            label="Email Penerima"
             required
             error={showErr('penerima')}
-            hint={`Pisahkan beberapa email dengan tanda koma (,) · ${recipientCount} penerima terdeteksi`}
+            hint="Masukkan 1 alamat email penerima resmi laporan otomatis."
           >
             <Input
-              placeholder="operasional@perusahaan.com, direksi@perusahaan.com"
+              type="email"
+              placeholder="operasional@perusahaan.com"
               value={formData.penerima}
               aria-invalid={!!showErr('penerima')}
               className={showErr('penerima') ? errCls : ''}

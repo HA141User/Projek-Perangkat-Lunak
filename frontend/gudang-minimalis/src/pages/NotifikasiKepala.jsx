@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell'
 import Badge from '../components/ui/Badge'
 import Btn from '../components/ui/Btn'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { formatDateTime } from '../lib/format'
 
 const MENU_KEPALA = [
   { label: 'Beranda', to: '/kepala-gudang' },
@@ -23,12 +24,12 @@ function mapApiNotif(n, idx = 0) {
   const rawTipe = String(n.tipe ?? n.jenis ?? n.type ?? 'stok_kritis').toLowerCase()
   const tipe = rawTipe.includes('laporan') ? 'laporan' : rawTipe.includes('opname') ? 'opname' : 'stok_kritis'
   return {
-    id: n.id_notifikasi ?? n.id ?? idx + 1,
+    id: n.id_notif ?? n.id_notifikasi ?? n.id ?? idx + 1,
     tipe,
-    judul: n.judul ?? n.title ?? 'Pemberitahuan Sistem WH-01',
-    deskripsi: n.deskripsi ?? n.pesan ?? n.message ?? '',
-    waktu: n.waktu ?? n.created_at ?? '-',
-    dibaca: Boolean(n.dibaca ?? n.is_read ?? false),
+    judul: n.judul ?? n.title ?? (n.nama_barang ? `Stok Menipis: ${n.nama_barang} (${n.kode_barang ?? ''})` : 'Pemberitahuan Sistem WH-01'),
+    deskripsi: n.pesan ?? n.deskripsi ?? n.message ?? '',
+    waktu: formatDateTime(n.created_at ?? n.waktu),
+    dibaca: Boolean(n.sudah_dibaca ?? n.dibaca ?? n.is_read ?? false),
   }
 }
 

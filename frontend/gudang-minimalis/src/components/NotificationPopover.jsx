@@ -51,16 +51,22 @@ export default function NotificationPopover({ onClose }) {
 
         {/* Daftar notifikasi */}
         <div className="max-h-[460px] overflow-auto">
-          {notifications.map((item) => (
-            <NotificationItem
-              key={item.id}
-              item={item}
-              onAction={(actionItem) => {
-                handleAction(actionItem)
-                onClose()
-              }}
-            />
-          ))}
+          {notifications.length === 0 ? (
+            <p className="px-5 py-8 text-center text-[13px] text-muted-dark">
+              Belum ada notifikasi saat ini.
+            </p>
+          ) : (
+            notifications.map((item) => (
+              <NotificationItem
+                key={item.id}
+                item={item}
+                onAction={(actionItem) => {
+                  handleAction(actionItem)
+                  onClose()
+                }}
+              />
+            ))
+          )}
         </div>
 
         {/* Footer panel */}

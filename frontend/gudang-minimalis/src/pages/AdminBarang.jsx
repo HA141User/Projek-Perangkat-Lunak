@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { PackagePlus, Search, Filter, Edit2, Trash2, Package, CheckCircle2, Lock, RefreshCw, QrCode } from 'lucide-react'
+import { PackagePlus, Search, Filter, Edit2, Trash2, Package, CheckCircle2, Lock, RefreshCw, QrCode, AlertTriangle } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
@@ -9,6 +9,7 @@ import QrLabelModal from '../components/QrLabelModal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -24,22 +25,24 @@ const MENU_ADMIN = [
 // ─── Master referensi opsi form ────────────────────────────────────────────
 const DEFAULT_KATEGORI = [
   { id: 1, value: 'Elektronik', prefix: 'ELK' },
-  { id: 2, value: 'Logistik', prefix: 'LOG' },
-  { id: 3, value: 'ATK', prefix: 'ATK' },
-  { id: 4, value: 'Safety', prefix: 'SAF' },
+  { id: 2, value: 'Alat Tulis', prefix: 'ATK' },
+  { id: 3, value: 'Kebersihan', prefix: 'KBR' },
 ]
 const SATUAN = ['Pcs', 'Unit', 'Roll', 'Dus', 'Box', 'Pack', 'Pasang', 'Set', 'Lembar', 'Kg', 'Meter', 'Liter']
-const DEFAULT_RAK = ['RAK A-01', 'RAK A-02', 'RAK B-01', 'RAK B-02', 'RAK C-01', 'RAK C-02', 'RAK D-01', 'RAK D-02']
+const DEFAULT_RAK = [
+  { id: 1, label: 'Rak A1' },
+  { id: 2, label: 'Rak B1' },
+  { id: 3, label: 'Rak C1' },
+]
 
 // ─── Aturan validasi ───────────────────────────────────────────────────────
-const SKU_REGEX = /^[A-Z0-9]+(-[A-Z0-9]+)*$/ // huruf besar/angka, dipisah tanda "-"
+const SKU_REGEX = /^[A-Z0-9]+(-[A-Z0-9]+)*$/
 const SKU_MIN = 3
 const SKU_MAX = 30
 const NAMA_MIN = 3
 const NAMA_MAX = 100
 const QTY_MAX = 1_000_000
 
-/** Normalisasi untuk perbandingan duplikat: trim, rapikan spasi ganda, abaikan huruf besar/kecil */
 const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
 
 function hitungStatus(stok, minStok) {
@@ -54,23 +57,31 @@ function statusVariant(status) {
   return 'danger'
 }
 
+function derivePrefix(name) {
+  const lower = String(name || '').toLowerCase()
+  if (lower.includes('elektronik')) return 'ELK'
+  if (lower.includes('tulis') || lower.includes('atk')) return 'ATK'
+  if (lower.includes('bersih')) return 'KBR'
+  if (lower.includes('logistik')) return 'LOG'
+  if (lower.includes('safety')) return 'SAF'
+  return String(name || 'BRG').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'BRG'
+}
+
 function mapApiItem(it, idx = 0) {
   const stok = Number(it.stok ?? it.stok_saat_ini ?? it.stock ?? 0)
   const minStok = Number(it.minStok ?? it.batas_stok_minimum ?? it.min_stock ?? 5)
   const rawRak =
-    (typeof it.rak === 'string' ? it.rak : null) ??
     it.lokasi?.nama_rak ??
     it.lokasi?.kode_lokasi ??
+    (typeof it.rak === 'string' ? it.rak : null) ??
     it.kode_lokasi ??
     it.lokasi_nama ??
-    it.location?.kode ??
-    'RAK A-01'
-  const rak = String(rawRak).toUpperCase().startsWith('RAK') ? rawRak : `RAK ${rawRak}`
+    'Rak A1'
+  const rak = String(rawRak).trim()
   const rawKat =
     it.kategori?.nama_kategori ??
     (typeof it.kategori === 'string' ? it.kategori : null) ??
     it.kategori_nama ??
-    it.category?.nama ??
     'Elektronik'
   const kategori = typeof rawKat === 'string' ? rawKat : 'Elektronik'
   return {
@@ -79,19 +90,17 @@ function mapApiItem(it, idx = 0) {
     nama: it.nama ?? it.nama_barang ?? it.name ?? 'Barang Gudang',
     kategori,
     rak,
-    satuan: it.satuan ?? it.unit ?? 'Pcs',
+    lokasiId: it.lokasi_id ?? it.lokasi?.id_lokasi ?? null,
+    satuan: it.satuan ?? it.unit ?? 'Unit',
     stok,
     minStok,
     status: hitungStatus(stok, minStok),
   }
 }
 
-/** SKU otomatis: BRG-{PREFIX KATEGORI}-{nomor urut berikutnya 3 digit} */
 function generateSku(kategori, items, kategoriList = DEFAULT_KATEGORI) {
   const prefix =
-    kategoriList.find((k) => k.value === kategori)?.prefix ??
-    kategori.slice(0, 3).toUpperCase() ??
-    'GEN'
+    kategoriList.find((k) => k.value === kategori)?.prefix ?? derivePrefix(kategori)
   const maxNo = items.reduce((max, i) => {
     const m = /-(\d+)$/.exec(i.sku)
     return m ? Math.max(max, Number(m[1])) : max
@@ -99,7 +108,7 @@ function generateSku(kategori, items, kategoriList = DEFAULT_KATEGORI) {
   let no = maxNo + 1
   let sku
   do {
-    sku = `BRG-${prefix}-${String(no).padStart(3, '0')}`
+    sku = `${prefix}-${String(no).padStart(3, '0')}`
     no += 1
   } while (items.some((i) => norm(i.sku) === norm(sku)))
   return sku
@@ -121,16 +130,14 @@ function validateBarang(form, items, editingId, kategoriList, rakList) {
   const sku = form.sku.trim().toUpperCase()
   const nama = form.nama.trim().replace(/\s+/g, ' ')
 
-  // SKU
   if (!sku) errors.sku = 'Kode SKU wajib diisi.'
   else if (sku.length < SKU_MIN || sku.length > SKU_MAX) errors.sku = `Kode SKU harus ${SKU_MIN}–${SKU_MAX} karakter.`
-  else if (!SKU_REGEX.test(sku)) errors.sku = 'Hanya huruf, angka, dan tanda "-" (contoh: BRG-ELK-009).'
+  else if (!SKU_REGEX.test(sku)) errors.sku = 'Hanya huruf, angka, dan tanda "-" (contoh: ELK-009).'
   else {
     const dup = others.find((i) => norm(i.sku) === norm(sku))
     if (dup) errors.sku = `Kode SKU sudah dipakai oleh "${dup.nama}".`
   }
 
-  // Nama barang
   if (!nama) errors.nama = 'Nama barang wajib diisi.'
   else if (nama.length < NAMA_MIN) errors.nama = `Nama barang minimal ${NAMA_MIN} karakter.`
   else if (nama.length > NAMA_MAX) errors.nama = `Nama barang maksimal ${NAMA_MAX} karakter.`
@@ -139,12 +146,14 @@ function validateBarang(form, items, editingId, kategoriList, rakList) {
     if (dup) errors.nama = `Nama barang sudah terdaftar dengan SKU ${dup.sku}.`
   }
 
-  // Referensi
-  if (kategoriList.length > 0 && !kategoriList.some((k) => k.value === form.kategori)) errors.kategori = 'Pilih kategori yang valid.'
+  if (kategoriList.length > 0 && !kategoriList.some((k) => k.value === form.kategori)) {
+    errors.kategori = 'Pilih kategori yang valid.'
+  }
   if (!SATUAN.includes(form.satuan)) errors.satuan = 'Pilih satuan yang valid.'
-  if (rakList.length > 0 && !rakList.includes(form.rak)) errors.rak = 'Pilih rak yang valid.'
+  if (rakList.length > 0 && !rakList.some((r) => norm(r.label) === norm(form.rak))) {
+    errors.rak = 'Pilih rak yang valid.'
+  }
 
-  // Kuantitas
   const minErr = validateQty(form.minStok, 'Batas minimum stok', { min: 1 })
   if (minErr) errors.minStok = minErr
   if (!editingId) {
@@ -155,7 +164,15 @@ function validateBarang(form, items, editingId, kategoriList, rakList) {
   return errors
 }
 
-const EMPTY_FORM = { sku: '', nama: '', kategori: 'Elektronik', rak: DEFAULT_RAK[0], satuan: 'Pcs', stok: '0', minStok: '5' }
+const EMPTY_FORM = {
+  sku: '',
+  nama: '',
+  kategori: 'Elektronik',
+  rak: DEFAULT_RAK[0].label,
+  satuan: 'Unit',
+  stok: '0',
+  minStok: '5',
+}
 const errCls = 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
 
 export default function AdminBarang() {
@@ -174,12 +191,20 @@ export default function AdminBarang() {
   const [touched, setTouched] = useState({})
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [pageError, setPageError] = useState('')
   const [toast, setToast] = useState('')
   const [qrModalItem, setQrModalItem] = useState(null)
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [loadingQr, setLoadingQr] = useState(false)
+  const toastTimerRef = useRef(null)
 
-  // Ambil master barang, kategori, dan lokasi murni dari API backend
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    }
+  }, [])
+
   useEffect(() => {
     let active = true
     async function loadMasterData() {
@@ -208,7 +233,7 @@ export default function AdminBarang() {
                 return {
                   id: c.id_kategori ?? c.id ?? idx + 1,
                   value: name,
-                  prefix: String(c.kode ?? name).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'BRG',
+                  prefix: c.kode ? String(c.kode).toUpperCase() : derivePrefix(name),
                 }
               })
               .filter(Boolean)
@@ -219,14 +244,21 @@ export default function AdminBarang() {
         if (active && locRes.ok) {
           const locs = unwrapList(await locRes.json().catch(() => null))
           if (Array.isArray(locs) && locs.length > 0) {
+            const seen = new Set()
             const mappedRaks = locs
-              .map((l) => {
-                const k = l.kode_lokasi ?? l.kode ?? l.nama_lokasi ?? l.name
-                if (!k) return null
-                return String(k).toUpperCase().startsWith('RAK') ? String(k).toUpperCase() : `RAK ${String(k).toUpperCase()}`
+              .map((l, idx) => {
+                const label = String(
+                  l.nama_rak ?? l.kode_lokasi ?? l.kode ?? l.nama_lokasi ?? l.name ?? ''
+                ).trim()
+                if (!label || seen.has(norm(label))) return null
+                seen.add(norm(label))
+                return {
+                  id: l.id_lokasi ?? l.id ?? idx + 1,
+                  label,
+                }
               })
               .filter(Boolean)
-            if (mappedRaks.length > 0) setRakList(Array.from(new Set(mappedRaks)))
+            if (mappedRaks.length > 0) setRakList(mappedRaks)
           }
         }
       } finally {
@@ -252,15 +284,13 @@ export default function AdminBarang() {
     return matchSearch && matchKategori
   })
 
-  // Validasi dihitung ulang setiap kali form berubah (real-time)
   const errors = useMemo(
     () => validateBarang(formData, items, editingItem?.id, kategoriList, rakList),
-    [formData, items, editingItem, kategoriList, rakList],
+    [formData, items, editingItem, kategoriList, rakList]
   )
   const isValid = Object.keys(errors).length === 0
   const showErr = (key) => (submitted || touched[key]) && errors[key]
 
-  // Pratinjau status stok di dalam form
   const previewStok = editingItem ? editingItem.stok : Number(formData.stok)
   const previewMin = Number(formData.minStok)
   const previewStatus =
@@ -268,12 +298,14 @@ export default function AdminBarang() {
 
   function showToast(msg) {
     setToast(msg)
-    setTimeout(() => setToast(''), 4000)
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = setTimeout(() => setToast(''), 4000)
   }
 
   function resetFormState() {
     setTouched({})
     setSubmitted(false)
+    setSubmitError('')
   }
 
   function handleOpenCreate() {
@@ -283,7 +315,7 @@ export default function AdminBarang() {
     setFormData({
       ...EMPTY_FORM,
       kategori: defaultKat,
-      rak: rakList[0] || DEFAULT_RAK[0],
+      rak: rakList[0]?.label || DEFAULT_RAK[0].label,
       sku: generateSku(defaultKat, items, kategoriList),
     })
     resetFormState()
@@ -291,15 +323,25 @@ export default function AdminBarang() {
   }
 
   function handleOpenEdit(item) {
+    const matchedRak =
+      rakList.find((r) => norm(r.label) === norm(item.rak))?.label ??
+      rakList[0]?.label ??
+      item.rak
     setEditingItem(item)
     setSkuAuto(false)
-    setFormData({ ...item, stok: String(item.stok), minStok: String(item.minStok) })
+    setFormData({
+      ...item,
+      rak: matchedRak,
+      stok: String(item.stok),
+      minStok: String(item.minStok),
+    })
     resetFormState()
     setIsModalOpen(true)
   }
 
   function handleClose() {
     setIsModalOpen(false)
+    setSubmitError('')
   }
 
   async function handleOpenQr(item) {
@@ -322,10 +364,12 @@ export default function AdminBarang() {
   }
 
   function updateField(key, value) {
+    setSubmitError('')
     setFormData((f) => {
       const next = { ...f, [key]: value }
-      // SKU otomatis mengikuti kategori selama belum diubah manual
-      if (key === 'kategori' && skuAuto && !editingItem) next.sku = generateSku(value, items, kategoriList)
+      if (key === 'kategori' && skuAuto && !editingItem) {
+        next.sku = generateSku(value, items, kategoriList)
+      }
       return next
     })
     setTouched((t) => ({ ...t, [key]: true }))
@@ -343,16 +387,25 @@ export default function AdminBarang() {
 
   async function handleDelete(item) {
     if (!confirm(`Yakin ingin menghapus "${item.nama}" (${item.sku})?\nTindakan ini tidak dapat dibatalkan.`)) return
-    const res = await apiFetch(`/api/items/${item.id}`, { method: 'DELETE' })
-    if (res.ok) {
+    setPageError('')
+    try {
+      const res = await apiFetch(`/api/items/${item.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setPageError(extractApiError(err, `Gagal menghapus ${item.sku} (${res.status})`))
+        return
+      }
       setItems((prev) => prev.filter((i) => i.id !== item.id))
       showToast(`Barang ${item.sku} berhasil dihapus.`)
+    } catch {
+      setPageError(`Gagal terhubung ke server saat menghapus ${item.sku}.`)
     }
   }
 
   async function handleSubmit(e) {
     e?.preventDefault?.()
     setSubmitted(true)
+    setSubmitError('')
     if (!isValid) return
 
     const clean = {
@@ -365,48 +418,82 @@ export default function AdminBarang() {
     }
 
     const kategoriId = kategoriList.find((k) => k.value === clean.kategori)?.id ?? 1
-    const apiBody = {
-      ...clean,
-      kode_barang: clean.sku,
-      nama_barang: clean.nama,
-      kategori_id: kategoriId,
-      batas_stok_minimum: clean.minStok,
-      min_stock: clean.minStok,
-      stok_saat_ini: editingItem ? editingItem.stok : Number(formData.stok),
-      stok: editingItem ? editingItem.stok : Number(formData.stok),
-    }
+    const lokasiObj = rakList.find((r) => norm(r.label) === norm(clean.rak))
+    const lokasiId = lokasiObj?.id ?? null
 
     setSaving(true)
     try {
       if (editingItem) {
-        await apiFetch(`/api/items/${editingItem.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(apiBody),
-        })
-        if (editingItem.minStok !== clean.minStok) {
-          await apiFetch(`/api/items/${editingItem.id}/min-stock`, {
+        const metaChanged =
+          clean.nama !== editingItem.nama ||
+          clean.kategori !== editingItem.kategori ||
+          norm(clean.rak) !== norm(editingItem.rak)
+        const minChanged = clean.minStok !== editingItem.minStok
+
+        if (metaChanged) {
+          const patchRes = await apiFetch(`/api/items/${editingItem.id}`, {
             method: 'PATCH',
-            body: JSON.stringify({ batas_stok_minimum: clean.minStok, min_stock: clean.minStok, minStok: clean.minStok }),
-          }).catch(() => {})
+            body: JSON.stringify({
+              nama_barang: clean.nama,
+              kategori_id: kategoriId,
+              ...(lokasiId ? { lokasi_id: lokasiId } : {}),
+            }),
+          })
+          if (!patchRes.ok) {
+            const err = await patchRes.json().catch(() => ({}))
+            throw new Error(extractApiError(err, `Gagal memperbarui barang (${patchRes.status})`))
+          }
         }
+
+        if (minChanged) {
+          const minRes = await apiFetch(`/api/items/${editingItem.id}/min-stock`, {
+            method: 'PATCH',
+            body: JSON.stringify({ batas_stok_minimum: clean.minStok }),
+          })
+          if (!minRes.ok) {
+            const err = await minRes.json().catch(() => ({}))
+            throw new Error(extractApiError(err, `Gagal memperbarui batas minimum stok (${minRes.status})`))
+          }
+        }
+
         setItems((prev) =>
           prev.map((i) =>
-            i.id === editingItem.id ? { ...i, ...clean, status: hitungStatus(i.stok, clean.minStok) } : i,
-          ),
+            i.id === editingItem.id
+              ? { ...i, ...clean, lokasiId: lokasiId ?? i.lokasiId, status: hitungStatus(i.stok, clean.minStok) }
+              : i
+          )
         )
         showToast(`Perubahan ${clean.sku} berhasil disimpan.`)
       } else {
         const stok = Number(formData.stok)
         const res = await apiFetch('/api/items/', {
           method: 'POST',
-          body: JSON.stringify(apiBody),
+          body: JSON.stringify({
+            kode_barang: clean.sku,
+            nama_barang: clean.nama,
+            kategori_id: kategoriId,
+            ...(lokasiId ? { lokasi_id: lokasiId } : {}),
+            stok_saat_ini: stok,
+            batas_stok_minimum: clean.minStok,
+          }),
         })
         const created = await res.json().catch(() => null)
-        const newId = created?.data?.id_barang ?? created?.data?.id ?? created?.id ?? Date.now()
-        setItems((prev) => [{ id: newId, ...clean, stok, status: hitungStatus(stok, clean.minStok) }, ...prev])
+        if (!res.ok) {
+          throw new Error(extractApiError(created, `Gagal mendaftarkan barang (${res.status})`))
+        }
+        const newId = created?.id_barang ?? created?.data?.id_barang ?? created?.data?.id ?? created?.id
+        if (!newId) {
+          throw new Error('Server tidak mengembalikan ID barang.')
+        }
+        setItems((prev) => [
+          { id: newId, ...clean, lokasiId, stok, status: hitungStatus(stok, clean.minStok) },
+          ...prev,
+        ])
         showToast(`Barang ${clean.sku} – ${clean.nama} berhasil didaftarkan.`)
       }
       setIsModalOpen(false)
+    } catch (err) {
+      setSubmitError(err.message || 'Gagal menyimpan data barang.')
     } finally {
       setSaving(false)
     }
@@ -428,6 +515,13 @@ export default function AdminBarang() {
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] text-emerald-800">
           <CheckCircle2 size={16} />
           {toast}
+        </div>
+      )}
+
+      {pageError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+          <AlertTriangle size={16} />
+          {pageError}
         </div>
       )}
 
@@ -541,8 +635,13 @@ export default function AdminBarang() {
             </div>
           )}
 
+          {submitError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
+              {submitError}
+            </div>
+          )}
+
           <div className="grid gap-4">
-            {/* SKU */}
             <Field
               label="Kode SKU / Barcode"
               required
@@ -583,7 +682,6 @@ export default function AdminBarang() {
               </div>
             </Field>
 
-            {/* Nama */}
             <Field
               label="Nama Barang"
               required
@@ -622,7 +720,7 @@ export default function AdminBarang() {
               <Field label="Alokasi Rak" required error={showErr('rak')}>
                 <Select value={formData.rak} onChange={(e) => updateField('rak', e.target.value)}>
                   {rakList.map((r) => (
-                    <option key={r} value={r}>{r}</option>
+                    <option key={r.id ?? r.label} value={r.label}>{r.label}</option>
                   ))}
                 </Select>
               </Field>
@@ -666,13 +764,12 @@ export default function AdminBarang() {
                   {previewStatus ? (
                     <Badge variant={statusVariant(previewStatus)} dot>{previewStatus}</Badge>
                   ) : (
-                    <span className="text-[12.5px] text-[#9CA3AF]">Lengkapi stok & batas minimum</span>
+                    <span className="text-[12.5px] text-[#9CA3AF]">Lengkapi stok &amp; batas minimum</span>
                   )}
                 </div>
               </Field>
             </div>
           </div>
-          {/* Submit tersembunyi agar tombol Enter memicu validasi */}
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
       </Modal>

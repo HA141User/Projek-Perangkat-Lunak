@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { ScanLine, CheckCircle, X, AlertTriangle, ArrowRight, QrCode } from 'lucide-react'
+import { ScanLine, CheckCircle, X, AlertTriangle, ArrowRight } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import QrScannerModal from '../components/QrScannerModal'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -82,7 +83,7 @@ export default function TransaksiKeluar() {
         if (it && (it.nama || it.nama_barang)) {
           handleSelectRak({
             id: it.id_barang ?? it.id ?? 1,
-            kode: String(it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
+            kode: String(it.lokasi?.nama_rak ?? it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
             sku: it.sku ?? it.kode_barang ?? q,
             nama: it.nama ?? it.nama_barang,
             stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
@@ -105,11 +106,14 @@ export default function TransaksiKeluar() {
   const isHabis = selectedRak && stokSetelah === 0
 
   async function handleSubmit() {
-    if (!selectedRak || stokTidakCukup || jumlahNum < 1) return
+    if (!selectedRak || stokTidakCukup || !Number.isInteger(jumlahNum) || jumlahNum < 1) {
+      setErrorBanner('Masukkan jumlah barang keluar bilangan bulat minimal 1 dan tidak melebihi stok.')
+      return
+    }
     setErrorBanner('')
     setLoading(true)
     try {
-      const keteranganText = catatan ? `Dokumen: ${catatan}` : `Barang Keluar dari Rak ${selectedRak.kode}`
+      const keteranganText = catatan.trim() ? `Dokumen: ${catatan.trim()}` : `Barang Keluar dari Rak ${selectedRak.kode}`
       const res = await apiFetch('/api/transactions/keluar', {
         method: 'POST',
         body: JSON.stringify({
@@ -121,16 +125,11 @@ export default function TransaksiKeluar() {
             },
           ],
           keterangan: keteranganText,
-          catatan: keteranganText,
         }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        const errorMsg =
-          err.message ||
-          (Array.isArray(err.errors) && err.errors[0]?.summary) ||
-          `Gagal menyimpan transaksi (${res.status})`
-        throw new Error(errorMsg)
+        throw new Error(extractApiError(err, `Gagal menyimpan transaksi (${res.status})`))
       }
       setRakOptions((prev) =>
         prev.map((r) => (r.id === selectedRak.id ? { ...r, stok: stokSetelah } : r))
@@ -147,9 +146,11 @@ export default function TransaksiKeluar() {
     setModal(null); setSelectedRak(null); setKodeManual(''); setCatatan('')
   }
 
-  function handleScannerSuccess({ item, jumlah: qty, noDokumen }) {
+  function handleScannerSuccess({ item, jumlah: qty }) {
+    const nextStok = Math.max(0, item.stok - qty)
+    const min = Number(item.min ?? 5)
     setRakOptions((prev) =>
-      prev.map((r) => (r.sku === item.sku ? { ...r, stok: Math.max(0, r.stok - qty) } : r))
+      prev.map((r) => (r.sku === item.sku ? { ...r, stok: nextStok } : r))
     )
     setModal({
       rak: item.rak,
@@ -157,7 +158,9 @@ export default function TransaksiKeluar() {
       jumlah: qty,
       waktu: new Date().toLocaleTimeString('id-ID'),
       stokSebelum: item.stok,
-      stokSetelah: Math.max(0, item.stok - qty),
+      stokSetelah: nextStok,
+      isKritis: nextStok > 0 && nextStok <= min,
+      isHabis: nextStok === 0,
     })
   }
 
@@ -259,9 +262,10 @@ export default function TransaksiKeluar() {
                 <input
                   type="number"
                   min="1"
+                  step="1"
                   max={stokSekarang}
                   value={jumlah}
-                  onChange={(e) => setJumlah(Number(e.target.value))}
+                  onChange={(e) => setJumlah(e.target.value)}
                   className="h-10 w-full rounded-lg border border-[#E5E7EB] bg-white px-3 text-[16px] font-semibold text-[#111827] outline-none focus:border-[#1D4ED8] focus:ring-2 focus:ring-[#1D4ED8]/15"
                 />
               </div>

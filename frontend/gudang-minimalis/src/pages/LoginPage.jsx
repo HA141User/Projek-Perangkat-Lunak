@@ -9,7 +9,7 @@ import {
   Lock,
   AlertCircle,
 } from "lucide-react";
-import { API } from "../lib/auth";
+import { API, setAuth } from "../lib/auth";
 
 const ROLE_ROUTES = {
   ADMIN: "/admin",
@@ -33,9 +33,9 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [selectedRole, setSelectedRole] = useState("AUTO");
   const [rememberMe, setRememberMe] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
+  const [infoMsg, setInfoMsg] = useState("");
 
   useEffect(() => {
     const token =
@@ -56,15 +56,14 @@ export default function LoginPage() {
   }, [navigate]);
 
   function handleLoginSuccess(userObj, token) {
-    const storage = rememberMe ? localStorage : sessionStorage;
-    storage.setItem("auth_token", token);
-    storage.setItem("auth_user", JSON.stringify(userObj));
+    setAuth(userObj, token, rememberMe);
     navigate(ROLE_ROUTES[userObj.role] || "/staff", { replace: true });
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setErrorMsg("");
+    setInfoMsg("");
     setLoading(true);
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -110,10 +109,7 @@ export default function LoginPage() {
         }
       }
 
-      const resolvedRole =
-        selectedRole !== "AUTO"
-          ? selectedRole
-          : normalizeRole(apiUser?.role || apiUser?.peran, "STAF_GUDANG");
+      const resolvedRole = normalizeRole(apiUser?.role || apiUser?.peran, "STAF_GUDANG");
 
       handleLoginSuccess(
         {
@@ -192,6 +188,12 @@ export default function LoginPage() {
             <div className="mt-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
               <AlertCircle size={15} className="shrink-0" />
               <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {infoMsg && (
+            <div className="mt-4 rounded-lg border border-blue-200 bg-[#EFF6FF] px-3.5 py-2.5 text-[13px] text-[#0037B0]">
+              {infoMsg}
             </div>
           )}
 
@@ -288,7 +290,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() =>
-                  alert("Hubungi Administrator IT: admin@gudangwh01.com")
+                  setInfoMsg("Hubungi Administrator IT: admin@gudangwh01.com")
                 }
                 className="text-[13.5px] font-medium text-[#0037B0] hover:underline"
               >

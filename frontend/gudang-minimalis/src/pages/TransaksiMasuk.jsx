@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { ScanLine, CheckCircle, X, ArrowRight, QrCode } from 'lucide-react'
+import { ScanLine, CheckCircle, X, ArrowRight } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import QrScannerModal from '../components/QrScannerModal'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -80,7 +81,7 @@ export default function TransaksiMasuk() {
         if (it && (it.nama || it.nama_barang)) {
           handleSelectRak({
             id: it.id_barang ?? it.id ?? 1,
-            kode: String(it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
+            kode: String(it.lokasi?.nama_rak ?? it.rak ?? it.kode_lokasi ?? q).replace(/^RAK\s+/i, ''),
             sku: it.sku ?? it.kode_barang ?? q,
             nama: it.nama ?? it.nama_barang,
             stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
@@ -95,14 +96,18 @@ export default function TransaksiMasuk() {
   }
 
   const stokSekarang = selectedRak ? selectedRak.stok : 0
-  const stokSetelah = selectedRak ? stokSekarang + Number(jumlah || 0) : 0
+  const jumlahNum = Number(jumlah || 0)
+  const stokSetelah = selectedRak ? stokSekarang + jumlahNum : 0
 
   async function handleSubmit() {
-    if (!selectedRak || Number(jumlah) < 1) return
+    if (!selectedRak || !Number.isInteger(jumlahNum) || jumlahNum < 1) {
+      setErrorBanner('Masukkan jumlah barang diterima minimal 1 (bilangan bulat).')
+      return
+    }
     setErrorBanner('')
     setLoading(true)
     try {
-      const keteranganText = catatan ? `Dokumen: ${catatan}` : `Barang Masuk ke Rak ${selectedRak.kode}`
+      const keteranganText = catatan.trim() ? `Dokumen: ${catatan.trim()}` : `Barang Masuk ke Rak ${selectedRak.kode}`
       const res = await apiFetch('/api/transactions/masuk', {
         method: 'POST',
         body: JSON.stringify({
@@ -110,20 +115,15 @@ export default function TransaksiMasuk() {
             {
               barang_id: Number(selectedRak.id),
               kode_barang: selectedRak.sku,
-              jumlah: Number(jumlah),
+              jumlah: jumlahNum,
             },
           ],
           keterangan: keteranganText,
-          catatan: keteranganText,
         }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        const errorMsg =
-          err.message ||
-          (Array.isArray(err.errors) && err.errors[0]?.summary) ||
-          `Gagal menyimpan transaksi (${res.status})`
-        throw new Error(errorMsg)
+        throw new Error(extractApiError(err, `Gagal menyimpan transaksi (${res.status})`))
       }
       setRakOptions((prev) =>
         prev.map((r) => (r.id === selectedRak.id ? { ...r, stok: stokSetelah } : r))
@@ -131,7 +131,7 @@ export default function TransaksiMasuk() {
       setModal({
         rak: selectedRak.kode,
         nama: selectedRak.nama,
-        jumlah: Number(jumlah),
+        jumlah: jumlahNum,
         waktu: new Date().toLocaleTimeString('id-ID'),
         stokSebelum: stokSekarang,
         stokSetelah,
@@ -150,7 +150,7 @@ export default function TransaksiMasuk() {
     setCatatan('')
   }
 
-  function handleScannerSuccess({ item, jumlah: qty, noDokumen }) {
+  function handleScannerSuccess({ item, jumlah: qty }) {
     setRakOptions((prev) =>
       prev.map((r) => (r.sku === item.sku ? { ...r, stok: r.stok + qty } : r))
     )
@@ -269,8 +269,9 @@ export default function TransaksiMasuk() {
                 <input
                   type="number"
                   min="1"
+                  step="1"
                   value={jumlah}
-                  onChange={(e) => setJumlah(Math.max(1, Number(e.target.value)))}
+                  onChange={(e) => setJumlah(e.target.value)}
                   className="h-10 w-full rounded-lg border border-[#E5E7EB] bg-white px-3 text-[16px] font-semibold text-[#111827] outline-none focus:border-[#1D4ED8] focus:ring-2 focus:ring-[#1D4ED8]/15"
                 />
               </div>
@@ -290,7 +291,7 @@ export default function TransaksiMasuk() {
             <div className="mb-5 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
               <span className="text-[13.5px] text-emerald-800">Estimasi stok setelah masuk:</span>
               <span className="text-[15px] font-semibold text-emerald-800">
-                {stokSekarang} + {jumlah} = <strong>{stokSetelah}</strong> Unit
+                {stokSekarang} + {jumlahNum} = <strong>{stokSetelah}</strong> Unit
               </span>
             </div>
 

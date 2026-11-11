@@ -6,6 +6,7 @@ import Modal from '../components/ui/Modal'
 import Btn from '../components/ui/Btn'
 import { Select } from '../components/ui/Form'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 const MENU_STAF = [
   { label: 'Beranda', to: '/staff' },
@@ -27,6 +28,7 @@ export default function AuditOpname() {
   const { user } = getAuth()
 
   const [rakItemsMap, setRakItemsMap] = useState({})
+  const [loadingItems, setLoadingItems] = useState(true)
   const [selectedRak, setSelectedRak] = useState('')
   const [inputs, setInputs] = useState({})
   const [loading, setLoading] = useState(false)
@@ -38,6 +40,7 @@ export default function AuditOpname() {
   useEffect(() => {
     let active = true
     async function loadItems() {
+      setLoadingItems(true)
       try {
         const res = await apiFetch('/api/items/')
         if (active && res.ok) {
@@ -58,6 +61,8 @@ export default function AuditOpname() {
         }
       } catch {
         /* biarkan kosong jika gagal */
+      } finally {
+        if (active) setLoadingItems(false)
       }
     }
     loadItems()
@@ -82,18 +87,19 @@ export default function AuditOpname() {
 
   function buildPayload() {
     return items.map((item) => {
-      const stokFisik = Number(inputs[item.sku]?.stokFisik ?? item.stokSistem)
+      const raw = inputs[item.sku]?.stokFisik
+      const stokFisik =
+        raw === '' || raw === undefined
+          ? item.stokSistem
+          : Math.max(0, Math.trunc(Number(raw)))
       return {
-        id_barang: item.id,
-        item_id: item.id,
+        barang_id: item.id,
         sku: item.sku,
         nama: item.nama,
         stokSistem: item.stokSistem,
-        stok_sistem: item.stokSistem,
         stokFisik,
-        stok_fisik: stokFisik,
         selisih: stokFisik - item.stokSistem,
-        keterangan: inputs[item.sku]?.keterangan ?? '',
+        keterangan: (inputs[item.sku]?.keterangan ?? '').trim(),
       }
     })
   }
@@ -106,24 +112,35 @@ export default function AuditOpname() {
       const res = await apiFetch('/api/opnames/', {
         method: 'POST',
         body: JSON.stringify({
-          rak: selectedRak,
-          kode_lokasi: selectedRak,
-          items: detailsPayload,
-          submittedAt: new Date().toISOString(),
+          keterangan: `Audit Rak ${selectedRak}`,
         }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        throw new Error(data.message || `Error ${res.status}`)
+        throw new Error(extractApiError(data, `Gagal membuat sesi opname (${res.status})`))
       }
       const created = await res.json().catch(() => ({}))
-      const opnameId = created?.data?.id_opname ?? created?.data?.id ?? created?.id
-      if (opnameId) {
-        await apiFetch(`/api/opnames/${opnameId}/details`, {
-          method: 'POST',
-          body: JSON.stringify({ items: detailsPayload, details: detailsPayload }),
-        }).catch(() => {})
+      const opnameId =
+        created?.id_opname ?? created?.data?.id_opname ?? created?.data?.id ?? created?.id
+      if (!opnameId) {
+        throw new Error('ID sesi opname tidak ditemukan pada respons server.')
       }
+
+      for (const d of detailsPayload) {
+        const detRes = await apiFetch(`/api/opnames/${opnameId}/details`, {
+          method: 'POST',
+          body: JSON.stringify({
+            barang_id: Number(d.barang_id),
+            stok_fisik: Number(d.stokFisik),
+            ...(d.keterangan ? { keterangan: d.keterangan } : {}),
+          }),
+        })
+        if (!detRes.ok) {
+          const detErr = await detRes.json().catch(() => ({}))
+          throw new Error(extractApiError(detErr, `Gagal menyimpan rincian ${d.sku} (${detRes.status})`))
+        }
+      }
+
       setShowConfirm(false)
       setSubmitted(true)
     } catch (err) {
@@ -179,8 +196,8 @@ export default function AuditOpname() {
           </div>
           <p className="mb-4 pl-8 text-[13px] text-[#6B7280]">Pilih rak yang akan diaudit stoknya.</p>
 
-          <Select value={selectedRak} onChange={handleRakChange}>
-            <option value="">— Pilih Rak —</option>
+          <Select value={selectedRak} onChange={handleRakChange} disabled={loadingItems}>
+            <option value="">{loadingItems ? 'Memuat daftar rak...' : '— Pilih Rak —'}</option>
             {rakList.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}

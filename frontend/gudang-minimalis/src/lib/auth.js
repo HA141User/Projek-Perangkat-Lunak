@@ -1,13 +1,29 @@
+export const AUTH_CHANGED_EVENT = 'gm-auth-changed'
+
 export function getAuth() {
   const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token')
   let user = null
   try {
     const raw = localStorage.getItem('auth_user') || sessionStorage.getItem('auth_user')
-    user = raw ? JSON.parse(raw) : null
+    if (raw) user = JSON.parse(raw)
   } catch {
-    user = null
+    clearAuth()
+    return { token: null, user: null }
   }
   return { token, user }
+}
+
+export function setAuth(userObj, token, rememberMe = true) {
+  localStorage.removeItem('auth_token')
+  localStorage.removeItem('auth_user')
+  sessionStorage.removeItem('auth_token')
+  sessionStorage.removeItem('auth_user')
+  const storage = rememberMe ? localStorage : sessionStorage
+  storage.setItem('auth_token', token)
+  storage.setItem('auth_user', JSON.stringify(userObj))
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT))
+  }
 }
 
 export function clearAuth() {
@@ -15,6 +31,9 @@ export function clearAuth() {
   localStorage.removeItem('auth_user')
   sessionStorage.removeItem('auth_token')
   sessionStorage.removeItem('auth_user')
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT))
+  }
 }
 
 export const API =
@@ -44,19 +63,31 @@ export function unwrapList(
 }
 
 /**
- * Memanggil API backend secara langsung (tanpa data dummy / emulasi lokal).
+ * Memanggil API backend dengan otorisasi Bearer dan penanganan sesi kedaluwarsa (401).
  */
 export async function apiFetch(path, options = {}) {
   const { token } = getAuth()
   const method = (options.method || 'GET').toUpperCase()
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
 
-  return fetch(`${API}${path}`, {
+  const res = await fetch(`${API}${path}`, {
     ...options,
     method,
     headers: {
-      'Content-Type': 'application/json',
+      ...(!isFormData && options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   })
+
+  if (
+    res.status === 401 &&
+    typeof window !== 'undefined' &&
+    window.location.pathname !== '/login'
+  ) {
+    clearAuth()
+    window.location.replace('/login')
+  }
+
+  return res
 }

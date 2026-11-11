@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { CheckCircle2, XCircle, ClipboardCheck } from 'lucide-react'
+import { CheckCircle2, XCircle, ClipboardCheck, AlertTriangle } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import { KpiCard, Card, CardHeader, CardBody } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError, formatDateTime } from '../lib/format'
 
 const MENU_KEPALA = [
   { label: 'Beranda', to: '/kepala-gudang' },
@@ -25,6 +26,8 @@ const MENU_ADMIN = [
   { label: 'Log Aktivitas', to: '/admin/log' },
 ]
 
+const FINAL_STATUSES = new Set(['DISETUJUI', 'DITOLAK', 'FINAL', 'APPROVED', 'REJECTED', 'SELESAI'])
+
 export default function PersetujuanOpname() {
   const navigate = useNavigate()
   const { user } = getAuth()
@@ -35,26 +38,34 @@ export default function PersetujuanOpname() {
   const [selectedSessionId, setSelectedSessionId] = useState(null)
   const [details, setDetails] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingDetails, setLoadingDetails] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [note, setNote] = useState('')
   const [outcome, setOutcome] = useState(null)
+  const [errorBanner, setErrorBanner] = useState('')
 
   useEffect(() => {
     let active = true
     async function loadOpnames() {
       setLoading(true)
+      setErrorBanner('')
       try {
         const res = await apiFetch('/api/opnames/')
-        if (active && res.ok) {
-          const list = unwrapList(await res.json().catch(() => null))
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          if (active) setErrorBanner(extractApiError(err, `Gagal memuat daftar opname (${res.status})`))
+          return
+        }
+        const list = unwrapList(await res.json().catch(() => null))
+        if (active) {
           setSessions(list)
           if (list.length > 0) {
             const first = list[0]
-            const firstId = first.id_opname ?? first.id
-            setSelectedSessionId(firstId)
+            setSelectedSessionId(first.id_opname ?? first.id)
           }
         }
       } catch {
-        /* biarkan kosong */
+        if (active) setErrorBanner('Gagal terhubung ke server untuk memuat sesi opname.')
       } finally {
         if (active) setLoading(false)
       }
@@ -67,6 +78,7 @@ export default function PersetujuanOpname() {
     if (!selectedSessionId) return
     let active = true
     async function loadDetail() {
+      setLoadingDetails(true)
       try {
         const res = await apiFetch(`/api/opnames/${selectedSessionId}`)
         if (active && res.ok) {
@@ -91,6 +103,8 @@ export default function PersetujuanOpname() {
         }
       } catch {
         /* ignore */
+      } finally {
+        if (active) setLoadingDetails(false)
       }
     }
     loadDetail()
@@ -103,32 +117,38 @@ export default function PersetujuanOpname() {
   }
 
   async function handleFinalize(approved) {
-    if (!selectedSessionId) return
+    if (!selectedSessionId || submitting) return
+    setSubmitting(true)
+    setErrorBanner('')
+    setOutcome(null)
     try {
       const res = await apiFetch(`/api/opnames/${selectedSessionId}/finalize`, {
         method: 'POST',
         body: JSON.stringify({
-          status: approved ? 'DISETUJUI' : 'DITOLAK',
-          approved,
-          catatan: note,
+          sinkronkan: Boolean(approved),
+          ...(note.trim() ? { keterangan: note.trim() } : {}),
         }),
       })
-      if (res.ok) {
-        setOutcome(approved ? 'approved' : 'rejected')
-        setSessions((prev) =>
-          prev.map((s) =>
-            (s.id_opname ?? s.id) === selectedSessionId
-              ? { ...s, status: approved ? 'DISETUJUI' : 'DITOLAK' }
-              : s
-          )
-        )
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(extractApiError(payload, `Gagal memfinalisasi opname (${res.status})`))
       }
-    } catch {
-      /* ignore */
+      const nextStatus = payload.status || (approved ? 'disetujui' : 'ditolak')
+      setOutcome(approved ? 'approved' : 'rejected')
+      setSessions((prev) =>
+        prev.map((s) =>
+          (s.id_opname ?? s.id) === selectedSessionId ? { ...s, status: nextStatus } : s
+        )
+      )
+    } catch (err) {
+      setErrorBanner(err.message || 'Gagal memproses persetujuan opname.')
+    } finally {
+      setSubmitting(false)
     }
   }
 
   const currentSession = sessions.find((s) => (s.id_opname ?? s.id) === selectedSessionId)
+  const isFinalized = FINAL_STATUSES.has(String(currentSession?.status ?? '').toUpperCase())
   const totalDiperiksa = details.length
   const totalSesuai = details.filter((d) => d.selisih === 0).length
   const totalSelisih = details.filter((d) => d.selisih !== 0).length
@@ -140,6 +160,13 @@ export default function PersetujuanOpname() {
       onLogout={handleLogout}
       pageTitle="Persetujuan Stok Opname"
     >
+      {errorBanner && (
+        <div className="mb-5 flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+          <AlertTriangle size={16} className="shrink-0" />
+          <span>{errorBanner}</span>
+        </div>
+      )}
+
       {/* Session Selector */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E5E7EB] bg-white p-4">
         <div className="flex items-center gap-2 text-[13.5px] font-medium text-[#111827]">
@@ -153,17 +180,19 @@ export default function PersetujuanOpname() {
             setSelectedSessionId(val)
             if (!val) setDetails([])
             setOutcome(null)
+            setErrorBanner('')
           }}
           className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2 text-[13.5px] text-[#111827] outline-none focus:border-[#1D4ED8]"
         >
           {sessions.length === 0 && <option value="">Belum ada sesi opname di server</option>}
           {sessions.map((s, idx) => {
             const id = s.id_opname ?? s.id ?? idx + 1
-            const rak = s.rak ?? s.kode_lokasi ?? 'Gudang WH-01'
-            const status = s.status ?? 'MENUNGGU'
+            const tgl = s.tanggal_opname ? formatDateTime(s.tanggal_opname, false) : ''
+            const label = s.rak ?? s.kode_lokasi ?? (tgl || 'Gudang WH-01')
+            const status = s.status ?? 'draft'
             return (
               <option key={id} value={id}>
-                Sesi #{id} · {rak} ({status})
+                Sesi #{id} · {label} ({status})
               </option>
             )
           })}
@@ -176,7 +205,7 @@ export default function PersetujuanOpname() {
           label="Total Item Diperiksa"
           value={String(totalDiperiksa)}
           unit="SKU"
-          delta={currentSession ? `Sesi #${selectedSessionId}` : 'Tidak ada sesi'}
+          delta={currentSession ? `Sesi #${selectedSessionId} (${currentSession.status ?? 'draft'})` : 'Tidak ada sesi'}
           deltaGood
         />
         <KpiCard
@@ -206,7 +235,7 @@ export default function PersetujuanOpname() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">SKU & Nama Barang</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">SKU &amp; Nama Barang</th>
                   <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Stok Sistem</th>
                   <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Hitung Fisik</th>
                   <th className="px-4 py-3 text-center text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Selisih</th>
@@ -214,7 +243,7 @@ export default function PersetujuanOpname() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E5E7EB]">
-                {loading ? (
+                {loading || loadingDetails ? (
                   <tr>
                     <td colSpan={5} className="py-10 text-center text-[13.5px] text-[#6B7280]">
                       Memuat data opname dari server...
@@ -254,14 +283,15 @@ export default function PersetujuanOpname() {
       {selectedSessionId && (
         <div className="rounded-xl border border-[#E5E7EB] bg-white p-5">
           <label className="mb-1.5 block text-[13.5px] font-semibold text-[#111827]">
-            Catatan Verifikasi & Instruksi Kepala Gudang
+            Catatan Verifikasi &amp; Instruksi Kepala Gudang
           </label>
           <textarea
             rows={3}
             value={note}
+            disabled={isFinalized || submitting}
             onChange={(e) => setNote(e.target.value)}
             placeholder="Tuliskan instruksi penyesuaian atau pertimbangan persetujuan..."
-            className="mb-4 w-full rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-[13.5px] text-[#111827] outline-none focus:border-[#1D4ED8]"
+            className="mb-4 w-full rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-[13.5px] text-[#111827] outline-none focus:border-[#1D4ED8] disabled:opacity-60"
           />
 
           {outcome && (
@@ -276,12 +306,30 @@ export default function PersetujuanOpname() {
             </div>
           )}
 
+          {isFinalized && !outcome && (
+            <div className="mb-4 rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-2.5 text-[13px] text-[#6B7280]">
+              Sesi opname ini berstatus <strong>{currentSession?.status}</strong> dan sudah difinalisasi.
+            </div>
+          )}
+
           <div className="flex flex-wrap justify-end gap-3">
-            <Btn variant="danger" icon={XCircle} onClick={() => handleFinalize(false)}>
-              Tolak & Minta Hitung Ulang
+            <Btn
+              variant="danger"
+              icon={XCircle}
+              loading={submitting}
+              disabled={isFinalized || submitting}
+              onClick={() => handleFinalize(false)}
+            >
+              Tolak &amp; Minta Hitung Ulang
             </Btn>
-            <Btn variant="primary" icon={CheckCircle2} onClick={() => handleFinalize(true)}>
-              Setujui & Sesuaikan Stok Sistem
+            <Btn
+              variant="primary"
+              icon={CheckCircle2}
+              loading={submitting}
+              disabled={isFinalized || submitting}
+              onClick={() => handleFinalize(true)}
+            >
+              Setujui &amp; Sesuaikan Stok Sistem
             </Btn>
           </div>
         </div>

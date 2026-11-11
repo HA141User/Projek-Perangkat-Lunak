@@ -4,6 +4,7 @@ import Sidebar from '../components/Sidebar'
 import KepalaGudangHeader from '../components/KepalaGudangHeader'
 import { KEPALA_MENU } from '../data/kepalaGudang'
 import { apiFetch } from '../lib/auth'
+import { extractApiError } from '../lib/format'
 
 import logoutIcon from '../assets/kepala-gudang/logout.svg'
 import breadcrumbChevronIcon from '../assets/kepala-gudang/breadcrumb-chevron.svg'
@@ -43,15 +44,19 @@ function Toggle({ checked, onChange, label }) {
 export default function NotificationSettings() {
   const [preferences, setPreferences] = useState(INITIAL_PREFERENCES)
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   function update(patch) {
     setPreferences((current) => ({ ...current, ...patch }))
     setSaved(false)
+    setSaveError('')
   }
 
   function handleReset() {
     setPreferences(INITIAL_PREFERENCES)
     setSaved(false)
+    setSaveError('')
   }
 
   useEffect(() => {
@@ -60,18 +65,25 @@ export default function NotificationSettings() {
       try {
         const res = await apiFetch('/api/preferences/')
         if (!res.ok) return
-        const data = await res.json().catch(() => null)
-        const p = data?.data || data
-        if (active && p && typeof p === 'object') {
-          setPreferences((curr) => ({
-            ...curr,
-            inApp: p.inApp ?? p.in_app ?? curr.inApp,
-            email: p.email ?? p.email_enabled ?? curr.email,
-            emailAddress: p.emailAddress ?? p.email_address ?? curr.emailAddress,
-            whatsapp: p.whatsapp ?? p.whatsapp_enabled ?? curr.whatsapp,
-            whatsappNumber: p.whatsappNumber ?? p.whatsapp_number ?? curr.whatsappNumber,
-          }))
-        }
+        const payload = await res.json().catch(() => null)
+        const list = Array.isArray(payload?.data)
+          ? payload.data
+          : Array.isArray(payload)
+            ? payload
+            : []
+        if (!active || list.length === 0) return
+
+        const byKanal = Object.fromEntries(
+          list.map((p) => [String(p.kanal_notifikasi || '').toLowerCase(), p])
+        )
+        setPreferences((curr) => ({
+          ...curr,
+          inApp: byKanal.push?.status_aktif ?? curr.inApp,
+          email: byKanal.email?.status_aktif ?? curr.email,
+          emailAddress: byKanal.email?.tujuan || curr.emailAddress,
+          whatsapp: byKanal.whatsapp?.status_aktif ?? curr.whatsapp,
+          whatsappNumber: byKanal.whatsapp?.tujuan || curr.whatsappNumber,
+        }))
       } catch {
         /* ignore */
       }
@@ -82,21 +94,41 @@ export default function NotificationSettings() {
 
   async function handleSave(event) {
     event.preventDefault()
-    setSaved(true)
+    setSaved(false)
+    setSaveError('')
+    setSaving(true)
     try {
-      await apiFetch('/api/preferences/', {
+      const res = await apiFetch('/api/preferences/', {
         method: 'PUT',
         body: JSON.stringify({
-          ...preferences,
-          in_app: preferences.inApp,
-          email_enabled: preferences.email,
-          email_address: preferences.emailAddress,
-          whatsapp_enabled: preferences.whatsapp,
-          whatsapp_number: preferences.whatsappNumber,
+          preferences: [
+            {
+              kanal_notifikasi: 'push',
+              tujuan: null,
+              status_aktif: Boolean(preferences.inApp),
+            },
+            {
+              kanal_notifikasi: 'email',
+              tujuan: preferences.emailAddress.trim() || null,
+              status_aktif: Boolean(preferences.email),
+            },
+            {
+              kanal_notifikasi: 'whatsapp',
+              tujuan: preferences.whatsappNumber.trim() || null,
+              status_aktif: Boolean(preferences.whatsapp),
+            },
+          ],
         }),
       })
-    } catch {
-      /* ignore */
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => ({}))
+        throw new Error(extractApiError(errPayload, `Gagal menyimpan preferensi (${res.status})`))
+      }
+      setSaved(true)
+    } catch (err) {
+      setSaveError(err.message || 'Gagal menyimpan preferensi notifikasi.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -288,6 +320,15 @@ export default function NotificationSettings() {
                 </div>
               </div>
 
+              {saveError && (
+                <p
+                  role="alert"
+                  className="mt-4 rounded border border-red-200 bg-red-50 px-4 py-2 text-xs leading-4 text-red-700"
+                >
+                  {saveError}
+                </p>
+              )}
+
               {saved && (
                 <p
                   role="status"
@@ -316,10 +357,11 @@ export default function NotificationSettings() {
                   </button>
                   <button
                     type="submit"
-                    className="flex items-center gap-1 rounded bg-brand-hover px-5 py-2 text-[13px] font-medium leading-[18px] tracking-[0.13px] text-white shadow-[0_1px_1px_rgba(0,0,0,0.05)] outline-none transition hover:bg-brand focus-visible:ring-2 focus-visible:ring-brand"
+                    disabled={saving}
+                    className="flex items-center gap-1 rounded bg-brand-hover px-5 py-2 text-[13px] font-medium leading-[18px] tracking-[0.13px] text-white shadow-[0_1px_1px_rgba(0,0,0,0.05)] outline-none transition hover:bg-brand disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     <img src={checkSmallIcon} alt="" className="h-[9px] w-auto" />
-                    Simpan Pengaturan
+                    {saving ? 'Menyimpan...' : 'Simpan Pengaturan'}
                   </button>
                 </div>
               </div>

@@ -47,40 +47,66 @@ export default function WarehouseDashboard() {
         const txList = txRes.ok ? unwrapList(await txRes.json().catch(() => null)) : []
         const opnList = opnRes.ok ? unwrapList(await opnRes.json().catch(() => null)) : []
 
-        const masukCount = dashData.barang_masuk_hari_ini ?? dashData.total_masuk ?? txList
-          .filter((t) => ['MASUK', 'IN'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
-          .reduce((sum, t) => {
-            const qty = Array.isArray(t.items) && t.items.length > 0
-              ? t.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
-              : Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0)
-            return sum + qty
-          }, 0)
+        const now = new Date()
+        const todayUtc = now.toISOString().slice(0, 10)
+        const todayLocal = now.toLocaleDateString('en-CA')
+        const todayStat = Array.isArray(dashData.grafik_transaksi)
+          ? dashData.grafik_transaksi.find((g) => g.tanggal === todayLocal || g.tanggal === todayUtc)
+          : null
 
-        const keluarCount = dashData.barang_keluar_hari_ini ?? dashData.total_keluar ?? txList
-          .filter((t) => ['KELUAR', 'OUT'].includes(String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()))
-          .reduce((sum, t) => {
-            const qty = Array.isArray(t.items) && t.items.length > 0
-              ? t.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
-              : Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0)
-            return sum + qty
-          }, 0)
+        const calcTodayUnits = (types) =>
+          txList
+            .filter((t) => {
+              const tType = String(t.tipe ?? t.jenis_transaksi ?? t.type ?? '').toUpperCase()
+              const tDate = String(t.tanggal_transaksi ?? t.created_at ?? '').slice(0, 10)
+              return types.includes(tType) && (!tDate || tDate === todayLocal || tDate === todayUtc)
+            })
+            .reduce((sum, t) => {
+              const qty =
+                Array.isArray(t.items) && t.items.length > 0
+                  ? t.items.reduce((s, it) => s + Number(it.jumlah ?? 0), 0)
+                  : Number(t.jumlah ?? t.kuantitas ?? t.quantity ?? 0)
+              return sum + qty
+            }, 0)
 
-        const pendingOpn = dashData.opname_menunggu ?? dashData.pending_opnames ?? opnList
-          .filter((o) => !['DISETUJUI', 'DITOLAK', 'FINAL', 'APPROVED', 'REJECTED'].includes(String(o.status ?? '').toUpperCase()))
-          .length
+        const masukCount =
+          todayStat?.total_masuk ??
+          dashData.barang_masuk_hari_ini ??
+          dashData.total_masuk ??
+          calcTodayUnits(['MASUK', 'IN'])
+
+        const keluarCount =
+          todayStat?.total_keluar ??
+          dashData.barang_keluar_hari_ini ??
+          dashData.total_keluar ??
+          calcTodayUnits(['KELUAR', 'OUT'])
+
+        const pendingOpn =
+          dashData.opname_menunggu ??
+          dashData.pending_opnames ??
+          opnList.filter(
+            (o) => !['DISETUJUI', 'DITOLAK', 'FINAL', 'APPROVED', 'REJECTED'].includes(String(o.status ?? '').toUpperCase())
+          ).length
 
         const totalSku = dashData.total_sku ?? dashData.total_barang ?? itemsList.length
 
         setMetrics([
-          { id: 'masuk', label: 'Barang Masuk Hari Ini', value: String(masukCount), unit: 'unit', delta: 'Tercatat di server', deltaGood: true },
-          { id: 'keluar', label: 'Barang Keluar Hari Ini', value: String(keluarCount), unit: 'unit', delta: 'Tercatat di server', deltaGood: false },
+          { id: 'masuk', label: 'Barang Masuk Hari Ini', value: String(masukCount), unit: 'unit', delta: `${dashData.transaksi_masuk_hari_ini ?? 0} transaksi tercatat`, deltaGood: true },
+          { id: 'keluar', label: 'Barang Keluar Hari Ini', value: String(keluarCount), unit: 'unit', delta: `${dashData.transaksi_keluar_hari_ini ?? 0} transaksi tercatat`, deltaGood: false },
           { id: 'opname', label: 'Opname Menunggu Persetujuan', value: String(pendingOpn), unit: 'sesi', delta: pendingOpn > 0 ? 'Perlu tindak lanjut' : 'Semua terverifikasi', deltaGood: pendingOpn === 0 },
           { id: 'sku', label: 'Total SKU Aktif', value: totalSku.toLocaleString('id-ID'), unit: 'SKU', delta: 'Terdaftar di database', deltaGood: true },
         ])
 
-        const kritis = itemsList
+        const kritisSource = Array.isArray(dashData.barang_kritis) ? dashData.barang_kritis : itemsList
+        const kritis = kritisSource
           .map((it) => ({
-            kodeRak: it.rak ?? it.kode_lokasi ?? it.lokasi?.kode_lokasi ?? '-',
+            kodeRak:
+              it.lokasi?.nama_rak ??
+              it.lokasi?.kode_lokasi ??
+              (typeof it.lokasi === 'string' ? it.lokasi : null) ??
+              it.rak ??
+              it.kode_lokasi ??
+              '-',
             namaBarang: it.nama ?? it.nama_barang ?? '-',
             sku: it.sku ?? it.kode_barang ?? '-',
             stok: Number(it.stok ?? it.stok_saat_ini ?? 0),
@@ -133,7 +159,8 @@ export default function WarehouseDashboard() {
       </div>
 
       {/* Critical Stock Table */}
-      <Card>
+      <div id="stok-kritis">
+        <Card>
         <CardHeader
           title={
             <span className="flex items-center gap-2">
@@ -212,6 +239,7 @@ export default function WarehouseDashboard() {
           </div>
         </CardBody>
       </Card>
+      </div>
     </AppShell>
   )
 }

@@ -1,5 +1,6 @@
-import { Link, NavLink } from 'react-router'
+import { Link, NavLink, useNavigate } from 'react-router'
 import { LogOut, Archive } from 'lucide-react'
+import { clearAuth } from '../lib/auth'
 
 export default function Sidebar({
   items = [],
@@ -11,6 +12,17 @@ export default function Sidebar({
   onLogout,
   userName,
 }) {
+  const navigate = useNavigate()
+
+  function handleWideLogout() {
+    if (onLogout) {
+      onLogout()
+      return
+    }
+    clearAuth()
+    navigate('/login', { replace: true })
+  }
+
   if (wide) {
     const solid = activeStyle === 'solid'
 
@@ -58,8 +70,9 @@ export default function Sidebar({
           </nav>
         </div>
 
-        <Link
-          to="/login"
+        <button
+          type="button"
+          onClick={handleWideLogout}
           className="flex w-full items-center gap-2 rounded px-3 py-2 text-[13px] font-medium text-muted-dark transition hover:bg-field max-md:hidden"
         >
           {logoutIcon ? (
@@ -77,7 +90,7 @@ export default function Sidebar({
               {logoutShortcut}
             </kbd>
           )}
-        </Link>
+        </button>
       </aside>
     )
   }

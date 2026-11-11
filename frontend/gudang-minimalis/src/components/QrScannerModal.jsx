@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useCallback, useState, useEffect, useRef } from 'react'
 import {
   QrCode,
   X,
@@ -14,6 +14,11 @@ import {
 import { Html5Qrcode } from 'html5-qrcode'
 import Btn from './ui/Btn'
 import { apiFetch, unwrapList } from '../lib/auth'
+import { extractApiError } from '../lib/format'
+
+function createDocNumber() {
+  return `DO-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`
+}
 
 /**
  * Audio beep ringkas saat QR sukses terdeteksi
@@ -26,7 +31,7 @@ function playSuccessBeep() {
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = 'sine'
-    osc.frequency.setValueAtTime(880, ctx.currentTime) // Pitch A5 (880Hz)
+    osc.frequency.setValueAtTime(880, ctx.currentTime)
     gain.gain.setValueAtTime(0.12, ctx.currentTime)
     gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12)
     osc.connect(gain)
@@ -38,50 +43,137 @@ function playSuccessBeep() {
   }
 }
 
-/**
- * QrScannerModal — Modal Pemindaian QR Kamera & Input Transaksi
- * Sesuai desain UI/UX: Staff Gudang - Scan QR Rak & Input - Modal.png
- * Dilengkapi Anti-Drift Lock: Setelah QR terdeteksi, scanner terkunci sehingga
- * kamera yang bergeser tidak akan membatalkan deteksi atau mereset data.
- */
-export default function QrScannerModal({
-  open,
-  onClose,
-  type = 'MASUK', // 'MASUK' | 'KELUAR'
-  onConfirm,
-}) {
+function QrScannerDialog({ onClose, type, onConfirm }) {
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [isLocked, setIsLocked] = useState(false)
   const isLockedRef = useRef(false)
 
   const [scannedItem, setScannedItem] = useState(null)
-  const [jumlah, setJumlah] = useState(10)
-  const [noDokumen, setNoDokumen] = useState(
-    `DO-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`
-  )
+  const [jumlah, setJumlah] = useState(type === 'KELUAR' ? '1' : '10')
+  const [noDokumen, setNoDokumen] = useState(() => createDocNumber())
   const [loadingLookup, setLoadingLookup] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
 
-  // Cache seluruh data barang server untuk fallback pencarian instan
   const allItemsRef = useRef([])
   const [demoItems, setDemoItems] = useState([])
 
   const html5QrCodeRef = useRef(null)
 
-  useEffect(() => {
-    if (!open) {
-      isLockedRef.current = false
-      setIsLocked(false)
-      setScannedItem(null)
-      setSubmitError('')
+  const handleCodeScanned = useCallback(async (rawCode) => {
+    if (!rawCode || isLockedRef.current) return
+
+    isLockedRef.current = true
+    setIsLocked(true)
+
+    try {
+      if (html5QrCodeRef.current && html5QrCodeRef.current.getState?.() === 2) {
+        html5QrCodeRef.current.pause(true)
+      }
+    } catch {
+      /* ignore */
+    }
+
+    playSuccessBeep()
+    setLoadingLookup(true)
+    setSubmitError('')
+
+    let clean = String(rawCode).trim()
+
+    if (
+      (clean.startsWith('{') && clean.endsWith('}')) ||
+      (clean.startsWith('[') && clean.endsWith(']'))
+    ) {
+      try {
+        const parsed = JSON.parse(clean)
+        clean = parsed.kode_barang || parsed.sku || parsed.kode || clean
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (clean.startsWith('http://') || clean.startsWith('https://')) {
+      try {
+        const url = new URL(clean)
+        const parts = url.pathname.split('/').filter(Boolean)
+        if (parts.length > 0) {
+          clean = decodeURIComponent(parts[parts.length - 1])
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const normalizedSku = clean.replace(/^SKU-/i, '').trim().toUpperCase()
+
+    try {
+      const res = await apiFetch(`/api/items/by-code/${encodeURIComponent(normalizedSku)}`)
+      if (res.ok) {
+        const payload = await res.json().catch(() => null)
+        const it = payload?.data || payload
+        if (it && (it.id_barang || it.id)) {
+          setScannedItem({
+            id: it.id_barang ?? it.id,
+            sku: it.kode_barang ?? it.sku ?? normalizedSku,
+            nama: it.nama_barang ?? it.nama ?? 'Barang Gudang',
+            rak: String(
+              it.lokasi?.nama_rak ?? it.rak ?? it.kode_lokasi ?? 'Rak A1'
+            ).replace(/^RAK\s+/i, ''),
+            stok: Number(it.stok_saat_ini ?? it.stok ?? 0),
+            min: Number(it.batas_stok_minimum ?? it.minStok ?? 5),
+            satuan: it.satuan ?? 'Unit',
+          })
+          setLoadingLookup(false)
+          return
+        }
+      }
+    } catch {
+      /* lanjut ke pencarian daftar barang */
+    }
+
+    const foundInList = allItemsRef.current.find((it) => {
+      const itSku = (it.kode_barang ?? it.sku ?? '').toUpperCase()
+      const itRak = String(it.lokasi?.nama_rak ?? it.rak ?? '').toUpperCase()
+      const cleanUpper = clean.toUpperCase()
+      const normUpper = normalizedSku.toUpperCase()
+
+      return (
+        itSku === normUpper ||
+        itSku === cleanUpper ||
+        itRak === cleanUpper ||
+        itRak === `RAK ${cleanUpper}` ||
+        `RAK ${itRak}` === cleanUpper
+      )
+    })
+
+    if (foundInList) {
+      setScannedItem({
+        id: foundInList.id_barang ?? foundInList.id,
+        sku: foundInList.kode_barang ?? foundInList.sku,
+        nama: foundInList.nama_barang ?? foundInList.nama ?? 'Barang Gudang',
+        rak: String(foundInList.lokasi?.nama_rak ?? foundInList.rak ?? 'Rak A1').replace(
+          /^RAK\s+/i,
+          ''
+        ),
+        stok: Number(foundInList.stok_saat_ini ?? foundInList.stok ?? 0),
+        min: Number(foundInList.batas_stok_minimum ?? foundInList.minStok ?? 5),
+        satuan: foundInList.satuan ?? 'Unit',
+      })
+      setLoadingLookup(false)
       return
     }
 
-    let isMounted = true
+    // Tetap kunci scanner agar tidak loop 10x/detik pada QR invalid; user klik "Pindai Ulang"
+    setLoadingLookup(false)
+    setScannedItem(null)
+    setSubmitError(
+      `QR "${clean}" tidak terdaftar di database server. Arahkan ke QR lain lalu tekan "Pindai Ulang".`
+    )
+  }, [])
 
-    // Ambil daftar barang dari backend untuk verifikasi & opsi uji cepat
+  useEffect(() => {
+    let isMounted = true
     apiFetch('/api/items/')
       .then(async (res) => {
         if (res.ok) {
@@ -97,12 +189,10 @@ export default function QrScannerModal({
     return () => {
       isMounted = false
     }
-  }, [open])
+  }, [])
 
   // Inisialisasi & Pengaturan Kamera html5-qrcode
   useEffect(() => {
-    if (!open) return
-
     let isCancelled = false
     let qrScanner = null
     const containerId = 'qr-camera-viewport'
@@ -120,9 +210,9 @@ export default function QrScannerModal({
             qrbox: { width: 220, height: 220 },
           },
           (decodedText) => {
-            // Jika sudah terkunci, abaikan frame berikutnya
-            if (isLockedRef.current) return
-            handleCodeScanned(decodedText)
+            if (!isLockedRef.current) {
+              handleCodeScanned(decodedText)
+            }
           },
           () => {
             /* abaikan error per frame */
@@ -158,31 +248,27 @@ export default function QrScannerModal({
       clearTimeout(timer)
       if (html5QrCodeRef.current) {
         try {
-          const state = html5QrCodeRef.current.getState?.()
-          // 2 = SCANNING, 3 = PAUSED
+          const scanner = html5QrCodeRef.current
+          const state = scanner.getState?.()
           if (state === 2 || state === 3) {
-            html5QrCodeRef.current
+            scanner
               .stop()
               .then(() => {
-                html5QrCodeRef.current?.clear()
-                html5QrCodeRef.current = null
+                scanner.clear()
               })
-              .catch(() => {
-                html5QrCodeRef.current = null
-              })
+              .catch(() => {})
           } else {
-            html5QrCodeRef.current.clear()
-            html5QrCodeRef.current = null
+            scanner.clear()
           }
         } catch {
-          html5QrCodeRef.current = null
+          /* ignore */
         }
+        html5QrCodeRef.current = null
       }
       setCameraActive(false)
     }
-  }, [open])
+  }, [handleCodeScanned])
 
-  // Buka kunci scanner agar bisa memindai ulang
   function handleUnlockRescan() {
     isLockedRef.current = false
     setIsLocked(false)
@@ -197,134 +283,14 @@ export default function QrScannerModal({
     }
   }
 
-  // Lookup kode barang atau rak ke backend
-  async function handleCodeScanned(rawCode) {
-    if (!rawCode || isLockedRef.current) return
-
-    // Kunci langsung pada deteksi pertama agar tidak terganggu geseran kamera
-    isLockedRef.current = true
-    setIsLocked(true)
-
-    // Jeda video kamera untuk menghemat daya & membekukan tampilan reticle
-    try {
-      if (html5QrCodeRef.current && html5QrCodeRef.current.getState?.() === 2) {
-        html5QrCodeRef.current.pause(true)
-      }
-    } catch {
-      /* ignore */
-    }
-
-    // Mainkan notifikasi suara berhasil
-    playSuccessBeep()
-
-    setLoadingLookup(true)
-    setSubmitError('')
-
-    let clean = String(rawCode).trim()
-
-    // 1. Ekstrak jika format JSON
-    if (
-      (clean.startsWith('{') && clean.endsWith('}')) ||
-      (clean.startsWith('[') && clean.endsWith(']'))
-    ) {
-      try {
-        const parsed = JSON.parse(clean)
-        clean = parsed.kode_barang || parsed.sku || parsed.kode || clean
-      } catch {
-        /* ignore */
-      }
-    }
-
-    // 2. Ekstrak jika format URL
-    if (clean.startsWith('http://') || clean.startsWith('https://')) {
-      try {
-        const url = new URL(clean)
-        const parts = url.pathname.split('/').filter(Boolean)
-        if (parts.length > 0) {
-          clean = decodeURIComponent(parts[parts.length - 1])
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    // 3. Bersihkan prefix stiker seperti SKU- atau RAK-
-    const normalizedSku = clean.replace(/^SKU-/i, '').trim().toUpperCase()
-
-    try {
-      // Prioritas 1: Panggil backend /api/items/by-code/:code
-      const res = await apiFetch(`/api/items/by-code/${encodeURIComponent(normalizedSku)}`)
-      if (res.ok) {
-        const payload = await res.json().catch(() => null)
-        const it = payload?.data || payload
-        if (it && (it.id_barang || it.id)) {
-          setScannedItem({
-            id: it.id_barang ?? it.id,
-            sku: it.kode_barang ?? it.sku ?? normalizedSku,
-            nama: it.nama_barang ?? it.nama ?? 'Barang Gudang',
-            rak: String(
-              it.lokasi?.nama_rak ?? it.rak ?? it.kode_lokasi ?? 'RAK A-01'
-            ).replace(/^RAK\s+/i, ''),
-            stok: Number(it.stok_saat_ini ?? it.stok ?? 0),
-            satuan: it.satuan ?? 'Dus',
-          })
-          setLoadingLookup(false)
-          return
-        }
-      }
-    } catch {
-      /* lanjut ke pencarian daftar barang */
-    }
-
-    // Prioritas 2: Cocokkan dengan data barang yang sudah di-load (bisa berupa SKU atau nama Rak)
-    const foundInList = allItemsRef.current.find((it) => {
-      const itSku = (it.kode_barang ?? it.sku ?? '').toUpperCase()
-      const itRak = String(it.lokasi?.nama_rak ?? it.rak ?? '').toUpperCase()
-      const cleanUpper = clean.toUpperCase()
-      const normUpper = normalizedSku.toUpperCase()
-
-      return (
-        itSku === normUpper ||
-        itSku === cleanUpper ||
-        itRak === cleanUpper ||
-        itRak === `RAK ${cleanUpper}` ||
-        `RAK ${itRak}` === cleanUpper
-      )
-    })
-
-    if (foundInList) {
-      setScannedItem({
-        id: foundInList.id_barang ?? foundInList.id,
-        sku: foundInList.kode_barang ?? foundInList.sku,
-        nama: foundInList.nama_barang ?? foundInList.nama ?? 'Barang Gudang',
-        rak: String(foundInList.lokasi?.nama_rak ?? foundInList.rak ?? 'RAK A-01').replace(
-          /^RAK\s+/i,
-          ''
-        ),
-        stok: Number(foundInList.stok_saat_ini ?? foundInList.stok ?? 0),
-        satuan: foundInList.satuan ?? 'Dus',
-      })
-      setLoadingLookup(false)
-      return
-    }
-
-    // Jika tidak ditemukan di database server sama sekali
-    setLoadingLookup(false)
-    setSubmitError(
-      `QR "${clean}" tidak terdaftar di database server. Silakan scan QR barang/rak yang valid.`
-    )
-    handleUnlockRescan()
-  }
-
-  // Submit Transaksi ke Backend sesuai skema resmi: { items: [{ barang_id, kode_barang, jumlah }], keterangan }
   async function handleConfirmSubmit() {
     if (!scannedItem) {
       setSubmitError('Pindai QR Code atau pilih barang terlebih dahulu.')
       return
     }
     const qty = Number(jumlah)
-    if (!qty || qty <= 0) {
-      setSubmitError('Masukkan jumlah unit/dus yang valid (minimal 1).')
+    if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty <= 0) {
+      setSubmitError('Masukkan jumlah bilangan bulat yang valid (minimal 1).')
       return
     }
     if (type === 'KELUAR' && qty > scannedItem.stok) {
@@ -338,8 +304,8 @@ export default function QrScannerModal({
     try {
       const endpoint =
         type === 'MASUK' ? '/api/transactions/masuk' : '/api/transactions/keluar'
-      const keteranganText = noDokumen
-        ? `Dokumen: ${noDokumen}`
+      const keteranganText = noDokumen.trim()
+        ? `Dokumen: ${noDokumen.trim()}`
         : `Transaksi ${type === 'MASUK' ? 'Barang Masuk' : 'Barang Keluar'} via QR Scanner`
 
       const res = await apiFetch(endpoint, {
@@ -353,17 +319,12 @@ export default function QrScannerModal({
             },
           ],
           keterangan: keteranganText,
-          catatan: keteranganText,
         }),
       })
 
       if (!res.ok) {
         const errPayload = await res.json().catch(() => ({}))
-        const errorMsg =
-          errPayload.message ||
-          (Array.isArray(errPayload.errors) && errPayload.errors[0]?.summary) ||
-          `Gagal memproses transaksi (${res.status})`
-        throw new Error(errorMsg)
+        throw new Error(extractApiError(errPayload, `Gagal memproses transaksi (${res.status})`))
       }
 
       const resData = await res.json().catch(() => null)
@@ -385,8 +346,6 @@ export default function QrScannerModal({
     }
   }
 
-  if (!open) return null
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-[2px] transition-all"
@@ -401,7 +360,7 @@ export default function QrScannerModal({
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-[15px] font-semibold text-[#111827]">
-              Scan QR Lokasi Rak & Barang
+              Scan QR Lokasi Rak &amp; Barang
             </h2>
             <p className="mt-0.5 text-[12px] text-[#6B7280]">
               Pemindaian fisik rak dan konfirmasi data muatan (
@@ -409,6 +368,7 @@ export default function QrScannerModal({
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="shrink-0 rounded-md p-1.5 text-[#6B7280] transition-colors hover:bg-[#F3F4F6] hover:text-[#111827]"
             aria-label="Tutup"
@@ -417,7 +377,7 @@ export default function QrScannerModal({
           </button>
         </div>
 
-        {/* Body Modal (2 Kolom sesuai desain) */}
+        {/* Body Modal */}
         <div className="p-6 bg-white">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
             {/* Kolom Kiri: Kamera Viewfinder */}
@@ -428,7 +388,9 @@ export default function QrScannerModal({
                   <span
                     className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold tracking-wide backdrop-blur-sm ${
                       isLocked
-                        ? 'bg-emerald-600/90 text-white shadow-sm'
+                        ? scannedItem
+                          ? 'bg-emerald-600/90 text-white shadow-sm'
+                          : 'bg-amber-600/90 text-white shadow-sm'
                         : 'bg-black/60 text-white'
                     }`}
                   >
@@ -442,7 +404,9 @@ export default function QrScannerModal({
                       }`}
                     />
                     {isLocked
-                      ? 'QR TERKUNCI'
+                      ? scannedItem
+                        ? 'QR TERKUNCI'
+                        : 'SCAN DIJEDA'
                       : cameraActive
                         ? 'KAMERA AKTIF'
                         : 'SCANNER STANDBY'}
@@ -472,40 +436,48 @@ export default function QrScannerModal({
                   <div
                     className={`relative size-44 rounded-lg border-2 transition-all duration-300 ${
                       isLocked
-                        ? 'border-emerald-400 bg-emerald-500/10 shadow-[0_0_20px_rgba(52,211,153,0.35)]'
+                        ? scannedItem
+                          ? 'border-emerald-400 bg-emerald-500/10 shadow-[0_0_20px_rgba(52,211,153,0.35)]'
+                          : 'border-amber-400 bg-amber-500/10'
                         : 'border-dashed border-teal-400/40'
                     }`}
                   >
-                    {/* Corners */}
                     <div
                       className={`absolute -top-1 -left-1 size-4 border-t-2 border-l-2 ${
-                        isLocked ? 'border-emerald-300' : 'border-teal-400'
+                        isLocked ? (scannedItem ? 'border-emerald-300' : 'border-amber-300') : 'border-teal-400'
                       }`}
                     />
                     <div
                       className={`absolute -top-1 -right-1 size-4 border-t-2 border-r-2 ${
-                        isLocked ? 'border-emerald-300' : 'border-teal-400'
+                        isLocked ? (scannedItem ? 'border-emerald-300' : 'border-amber-300') : 'border-teal-400'
                       }`}
                     />
                     <div
                       className={`absolute -bottom-1 -left-1 size-4 border-b-2 border-l-2 ${
-                        isLocked ? 'border-emerald-300' : 'border-teal-400'
+                        isLocked ? (scannedItem ? 'border-emerald-300' : 'border-amber-300') : 'border-teal-400'
                       }`}
                     />
                     <div
                       className={`absolute -bottom-1 -right-1 size-4 border-b-2 border-r-2 ${
-                        isLocked ? 'border-emerald-300' : 'border-teal-400'
+                        isLocked ? (scannedItem ? 'border-emerald-300' : 'border-amber-300') : 'border-teal-400'
                       }`}
                     />
 
-                    {/* Laser Beam saat aktif / Icon Check saat terkunci */}
                     {isLocked ? (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-2">
-                        <span className="grid size-10 place-items-center rounded-full bg-emerald-500 text-white shadow-lg animate-in zoom-in-75 duration-200">
-                          <CheckCircle size={22} />
+                        <span
+                          className={`grid size-10 place-items-center rounded-full text-white shadow-lg animate-in zoom-in-75 duration-200 ${
+                            scannedItem ? 'bg-emerald-500' : 'bg-amber-500'
+                          }`}
+                        >
+                          {scannedItem ? <CheckCircle size={22} /> : <AlertCircle size={22} />}
                         </span>
-                        <p className="mt-2 text-[11px] font-bold tracking-wide text-emerald-300 uppercase">
-                          QR Terdeteksi
+                        <p
+                          className={`mt-2 text-[11px] font-bold tracking-wide uppercase ${
+                            scannedItem ? 'text-emerald-300' : 'text-amber-300'
+                          }`}
+                        >
+                          {scannedItem ? 'QR Terdeteksi' : 'Kode Tak Dikenal'}
                         </p>
                       </div>
                     ) : (
@@ -523,7 +495,7 @@ export default function QrScannerModal({
                       className="pointer-events-auto inline-flex items-center gap-1.5 text-[11.5px] font-medium text-emerald-200 bg-black/70 px-3 py-1 rounded-full border border-emerald-400/40 hover:bg-black/90 transition-all cursor-pointer"
                     >
                       <Lock size={12} className="text-emerald-400" />
-                      Hasil scan terkunci · Klik untuk scan ulang
+                      {scannedItem ? 'Hasil scan terkunci · Klik untuk scan ulang' : 'Scanner dijeda · Klik untuk scan ulang'}
                     </button>
                   ) : (
                     <p className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 bg-black/60 px-2.5 py-1 rounded-full">
@@ -534,7 +506,7 @@ export default function QrScannerModal({
                 </div>
               </div>
 
-              {/* Uji Cepat (Simulasi Scanner tanpa kamera fisik) */}
+              {/* Uji Cepat */}
               <div className="mt-3.5 w-full max-w-[320px]">
                 <div className="flex items-center justify-between mb-1.5">
                   <p className="text-[11px] font-medium text-[#6B7280]">
@@ -574,7 +546,6 @@ export default function QrScannerModal({
 
             {/* Kolom Kanan: Form Data Hasil Scan */}
             <div className="space-y-4">
-              {/* Chip Status Lokasi Terdeteksi */}
               <div
                 className={`flex items-center justify-between rounded-xl border px-3.5 py-2.5 transition-colors ${
                   scannedItem
@@ -606,7 +577,6 @@ export default function QrScannerModal({
                 </span>
               </div>
 
-              {/* Form Input 1: Kode & Nama Barang */}
               <div>
                 <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-wider text-[#4B5563]">
                   Kode / Nama Barang
@@ -646,7 +616,6 @@ export default function QrScannerModal({
                 </div>
               </div>
 
-              {/* Form Input 2: Jumlah Dus / Item */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-[11.5px] font-bold uppercase tracking-wider text-[#4B5563]">
@@ -663,6 +632,7 @@ export default function QrScannerModal({
                   <input
                     type="number"
                     min={1}
+                    step={1}
                     max={type === 'KELUAR' && scannedItem ? scannedItem.stok : undefined}
                     value={jumlah}
                     onChange={(e) => setJumlah(e.target.value)}
@@ -670,12 +640,11 @@ export default function QrScannerModal({
                     placeholder="0"
                   />
                   <span className="text-[12px] font-medium text-[#6B7280]">
-                    {scannedItem?.satuan || 'Dus'}
+                    {scannedItem?.satuan || 'Unit'}
                   </span>
                 </div>
               </div>
 
-              {/* Form Input 3: No Dokumen / Surat Jalan */}
               <div>
                 <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-wider text-[#4B5563]">
                   No. Dokumen / Surat Jalan
@@ -692,7 +661,6 @@ export default function QrScannerModal({
                 </div>
               </div>
 
-              {/* Error Alert */}
               {submitError && (
                 <div className="flex items-start gap-2 rounded-lg bg-red-50 p-2.5 text-[12.5px] text-red-700 border border-red-200">
                   <AlertCircle size={15} className="shrink-0 mt-0.5" />
@@ -700,7 +668,6 @@ export default function QrScannerModal({
                 </div>
               )}
 
-              {/* Kamera Error */}
               {cameraError && !submitError && (
                 <div className="flex items-start gap-2 rounded-lg bg-amber-50 p-2.5 text-[12px] text-amber-800 border border-amber-200">
                   <AlertCircle size={15} className="shrink-0 mt-0.5 text-amber-600" />
@@ -714,7 +681,7 @@ export default function QrScannerModal({
         {/* Footer Modal */}
         <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-white px-6 py-4">
           <div className="text-[12px] text-[#6B7280]">
-            {isLocked ? (
+            {isLocked && scannedItem ? (
               <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                 <CheckCircle size={13} />
                 Data terkunci aman dari pergerakan kamera
@@ -736,11 +703,19 @@ export default function QrScannerModal({
               disabled={!scannedItem}
               icon={CheckCircle}
             >
-              Konfirmasi & Simpan Transaksi
+              Konfirmasi &amp; Simpan Transaksi
             </Btn>
           </div>
         </div>
       </div>
     </div>
   )
+}
+
+/**
+ * QrScannerModal — Wrapper yang memastikan state scanner & kamera bersih tiap kali modal dibuka/tutup.
+ */
+export default function QrScannerModal({ open, onClose, type = 'MASUK', onConfirm }) {
+  if (!open) return null
+  return <QrScannerDialog onClose={onClose} type={type} onConfirm={onConfirm} />
 }

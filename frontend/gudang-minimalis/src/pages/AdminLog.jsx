@@ -6,6 +6,7 @@ import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 import { downloadCSV, fileStamp } from '../lib/csv'
+import { formatDateTime } from '../lib/format'
 
 const MENU_ADMIN = [
   { label: 'Beranda', to: '/admin' },
@@ -18,25 +19,26 @@ const MENU_ADMIN = [
   { label: 'Log Aktivitas', to: '/admin/log' },
 ]
 
-const CODE_BADGE = {
-  USER_CREATE: 'info',
-  SYSTEM_AUTO: 'neutral',
-  UPDATE_MASTER: 'warning',
-  STOCK_IN: 'success',
-  STOCK_OUT: 'danger',
-  AUDIT_SUBMIT: 'info',
-  OPNAME_APPROVE: 'success',
+function badgeForCode(code) {
+  const c = String(code || '').toLowerCase()
+  if (c.includes('keluar') || c.includes('delete') || c.includes('out')) return 'danger'
+  if (c.includes('masuk') || c.includes('create') || c.includes('approve') || c.includes('in')) return 'success'
+  if (c.includes('update') || c.includes('edit')) return 'warning'
+  return 'info'
 }
 
 function mapApiLog(l, idx = 0) {
+  const kode = l.kode ?? l.aksi ?? l.action ?? l.event ?? 'system'
+  const entitasBase = l.entitas ?? l.entitas_terkait ?? l.target ?? l.entity ?? 'WH-01'
+  const entitas = l.entitas_id ? `${entitasBase} #${l.entitas_id}` : entitasBase
   return {
     id: l.id_log ?? l.id ?? idx + 1,
-    waktu: l.waktu ?? l.created_at ?? l.timestamp ?? '-',
-    kode: l.kode ?? l.aksi ?? l.action ?? l.event ?? 'SYSTEM_AUTO',
-    aktor: l.aktor ?? l.user_nama ?? l.user?.nama ?? l.actor ?? 'Sistem WH-01',
-    entitas: l.entitas ?? l.target ?? l.entity ?? 'WH-01',
+    waktu: formatDateTime(l.waktu ?? l.created_at ?? l.timestamp),
+    kode,
+    aktor: l.aktor ?? l.nama_user ?? l.user_nama ?? l.user?.nama ?? l.actor ?? 'Sistem WH-01',
+    entitas,
     ip: l.ip ?? l.ip_address ?? '-',
-    keterangan: l.keterangan ?? l.deskripsi ?? l.description ?? l.message ?? '',
+    keterangan: l.keterangan ?? l.deskripsi ?? l.description ?? l.message ?? `${kode} pada ${entitas}`,
   }
 }
 
@@ -44,6 +46,7 @@ export default function AdminLog() {
   const navigate = useNavigate()
   const { user } = getAuth()
   const [logs, setLogs] = useState([])
+  const [totalServer, setTotalServer] = useState(0)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterCode, setFilterCode] = useState('Semua')
@@ -54,9 +57,11 @@ export default function AdminLog() {
     async function loadLogs() {
       setLoading(true)
       try {
-        const res = await apiFetch('/api/audit-logs')
+        const res = await apiFetch('/api/audit-logs?limit=100')
         if (active && res.ok) {
-          const list = unwrapList(await res.json().catch(() => null))
+          const payload = await res.json().catch(() => null)
+          const list = unwrapList(payload)
+          setTotalServer(payload?.meta?.total ?? list.length)
           setLogs(list.map(mapApiLog))
         }
       } catch {
@@ -68,6 +73,8 @@ export default function AdminLog() {
     loadLogs()
     return () => { active = false }
   }, [])
+
+  const codeOptions = Array.from(new Set(logs.map((l) => l.kode))).sort()
 
   function handleLogout() {
     clearAuth()
@@ -126,13 +133,9 @@ export default function AdminLog() {
             className="bg-transparent text-[13.5px] text-[#111827] outline-none"
           >
             <option value="Semua">Semua Kode</option>
-            <option value="USER_CREATE">USER_CREATE</option>
-            <option value="SYSTEM_AUTO">SYSTEM_AUTO</option>
-            <option value="UPDATE_MASTER">UPDATE_MASTER</option>
-            <option value="STOCK_IN">STOCK_IN</option>
-            <option value="STOCK_OUT">STOCK_OUT</option>
-            <option value="AUDIT_SUBMIT">AUDIT_SUBMIT</option>
-            <option value="OPNAME_APPROVE">OPNAME_APPROVE</option>
+            {codeOptions.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
           </select>
         </div>
 
@@ -171,7 +174,7 @@ export default function AdminLog() {
                   <tr key={log.id} className="hover:bg-[#F9FAFB] transition-colors">
                     <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{log.waktu}</td>
                     <td className="px-4 py-3">
-                      <Badge variant={CODE_BADGE[log.kode] || 'neutral'}>{log.kode}</Badge>
+                      <Badge variant={badgeForCode(log.kode)}>{log.kode}</Badge>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#111827]">{log.aktor}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#374151]">{log.entitas}</td>
@@ -184,7 +187,7 @@ export default function AdminLog() {
           </table>
         </div>
         <div className="flex items-center justify-between border-t border-[#E5E7EB] px-4 py-3 text-[12.5px] text-[#6B7280]">
-          <span>Menampilkan {filteredLogs.length} dari {logs.length} catatan</span>
+          <span>Menampilkan {filteredLogs.length} dari {totalServer} catatan</span>
           <span className="font-medium text-[#374151]">Audit Log · WH-01</span>
         </div>
       </div>

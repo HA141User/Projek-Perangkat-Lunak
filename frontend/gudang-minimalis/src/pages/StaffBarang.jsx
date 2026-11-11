@@ -83,6 +83,9 @@ export default function StaffBarang() {
   async function handleOpenQr(item) {
     setQrModalItem(item)
     setQrDataUrl('')
+    if (user?.role === 'STAF_GUDANG') {
+      return
+    }
     setLoadingQr(true)
     try {
       const res = await apiFetch(`/api/items/${item.id}/qr`)

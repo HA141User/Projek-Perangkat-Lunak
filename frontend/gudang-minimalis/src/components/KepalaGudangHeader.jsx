@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useWarehouse } from '../context/WarehouseContext'
+import { clearAuth } from '../lib/auth'
 import NotificationPopover from './NotificationPopover'
 import bellIcon from '../assets/kepala-gudang/bell-white.svg'
 
@@ -20,7 +21,8 @@ export default function KepalaGudangHeader() {
       }
       const tag = event.target?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
-      navigate('/login')
+      clearAuth()
+      navigate('/login', { replace: true })
     }
 
     window.addEventListener('keydown', onKeyDown)

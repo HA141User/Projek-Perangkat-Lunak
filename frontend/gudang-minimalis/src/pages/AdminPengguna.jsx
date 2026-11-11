@@ -8,6 +8,7 @@ import Modal from '../components/ui/Modal'
 import { Field, Input, Select } from '../components/ui/Form'
 import { Card, CardHeader } from '../components/ui/Card'
 import { apiFetch, getAuth, clearAuth, unwrapList } from '../lib/auth'
+import { extractApiError, formatDateTime } from '../lib/format'
 
 const MENU_ADMIN = [
   { to: '/admin', label: 'Beranda' },
@@ -40,13 +41,15 @@ function roleFromApi(raw) {
 }
 
 function mapApiUser(u, idx = 0) {
+  const rawAktif = u.status_aktif ?? u.aktif ?? u.is_active
+  const aktif = typeof rawAktif === 'boolean' ? rawAktif : u.status !== 'NONAKTIF'
   return {
     id: u.id_user ?? u.id ?? idx + 1,
     nama: u.nama_lengkap ?? u.nama ?? u.name ?? 'Pengguna',
     email: u.email ?? '',
     peran: PERAN_META[u.peran] ? u.peran : roleFromApi(u.role ?? u.peran),
-    aktif: typeof u.aktif === 'boolean' ? u.aktif : u.is_active !== false && u.status !== 'NONAKTIF',
-    login: u.login ?? u.last_login ?? 'Terdaftar di sistem',
+    aktif,
+    login: u.last_login ? formatDateTime(u.last_login) : u.created_at ? formatDateTime(u.created_at) : 'Terdaftar di sistem',
   }
 }
 
@@ -93,6 +96,7 @@ export default function AdminPengguna() {
   const [fieldErrors, setFieldErrors] = useState({})
   const [showPassword, setShowPassword] = useState(false)
   const [toast, setToast] = useState('')
+  const [pageError, setPageError] = useState('')
 
   // Ambil daftar pengguna murni dari GET /api/users/
   useEffect(() => {
@@ -146,16 +150,21 @@ export default function AdminPengguna() {
     )
 
     try {
-      await apiFetch(`/api/users/${targetUser.id}/status`, {
+      const res = await apiFetch(`/api/users/${targetUser.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          aktif: nextAktif,
-          is_active: nextAktif,
-          status: nextAktif ? 'AKTIF' : 'NONAKTIF',
-        }),
+        body: JSON.stringify({ status_aktif: nextAktif }),
       })
-    } catch {
-      /* ignore */
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(extractApiError(err, `Gagal mengubah status pengguna (${res.status})`))
+      }
+      setToast(`Status ${targetUser.nama} berhasil diubah menjadi ${nextAktif ? 'AKTIF' : 'NONAKTIF'}.`)
+      setTimeout(() => setToast(''), 4000)
+    } catch (err) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === targetUser.id ? { ...u, aktif: targetUser.aktif } : u))
+      )
+      setPageError(err.message || 'Gagal memperbarui status pengguna di server.')
     }
   }
 
@@ -170,12 +179,9 @@ export default function AdminPengguna() {
     }
 
     const payload = {
-      nama: form.nama.trim(),
       nama_lengkap: form.nama.trim(),
-      name: form.nama.trim(),
       email: form.email.trim().toLowerCase(),
       password: form.password,
-      peran: form.peran,
       role: ROLE_TO_API[form.peran] || 'STAF_GUDANG',
     }
 
@@ -189,27 +195,19 @@ export default function AdminPengguna() {
         body: JSON.stringify(payload),
       })
 
+      const created = await res.json().catch(() => null)
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        throw new Error(errData.message || errData.error || 'Gagal menyimpan data pengguna.')
+        throw new Error(extractApiError(created, 'Gagal menyimpan data pengguna.'))
       }
 
-      const created = await res.json().catch(() => null)
-      const createdObj = created?.data || created?.user || null
+      const createdObj = created?.id_user ? created : (created?.data || created?.user || null)
+      if (!createdObj) {
+        throw new Error('Server tidak mengembalikan data pengguna yang terdaftar.')
+      }
 
-      const newUser = createdObj
-        ? mapApiUser(createdObj)
-        : {
-            id: Date.now(),
-            nama: payload.nama,
-            email: payload.email,
-            peran: payload.peran,
-            aktif: true,
-            login: 'Baru saja didaftarkan',
-          }
-
+      const newUser = mapApiUser(createdObj)
       setUsers((prev) => [newUser, ...prev.filter((u) => u.email !== newUser.email)])
-      setToast(`Pengguna ${payload.nama} berhasil didaftarkan!`)
+      setToast(`Pengguna ${payload.nama_lengkap} berhasil didaftarkan!`)
       setTimeout(() => setToast(''), 4000)
       closeModal()
     } catch (err) {
@@ -235,6 +233,12 @@ export default function AdminPengguna() {
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] text-emerald-800">
           <CheckCircle2 size={16} />
           {toast}
+        </div>
+      )}
+
+      {pageError && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+          {pageError}
         </div>
       )}
 
