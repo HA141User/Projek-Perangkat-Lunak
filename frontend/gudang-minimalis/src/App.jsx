@@ -84,6 +84,7 @@ export default function App() {
           <Route path="/admin/pengguna" element={<RequireRole allowed={['ADMIN']}><AdminPengguna /></RequireRole>} />
           <Route path="/admin/barang" element={<RequireRole allowed={['ADMIN']}><AdminBarang /></RequireRole>} />
           <Route path="/admin/rak" element={<RequireRole allowed={['ADMIN']}><AdminRak /></RequireRole>} />
+          <Route path="/admin/persetujuan" element={<RequireRole allowed={['ADMIN', 'KEPALA_GUDANG']}><PersetujuanOpname /></RequireRole>} />
           <Route path="/admin/laporan" element={<RequireRole allowed={['ADMIN']}><LaporanInventaris /></RequireRole>} />
           <Route path="/admin/laporan-otomatis" element={<RequireRole allowed={['ADMIN']}><AdminLaporanOtomatis /></RequireRole>} />
           <Route path="/admin/log" element={<RequireRole allowed={['ADMIN']}><AdminLog /></RequireRole>} />
