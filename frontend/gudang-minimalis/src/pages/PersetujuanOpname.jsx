@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { CheckCircle2, XCircle, ClipboardCheck, AlertTriangle } from 'lucide-react'
+import { CheckCircle2, XCircle, ClipboardCheck, AlertTriangle, Plus } from 'lucide-react'
 import AppShell from '../components/AppShell'
 import Btn from '../components/ui/Btn'
 import Badge from '../components/ui/Badge'
+import Modal from '../components/ui/Modal'
+import { Select } from '../components/ui/Form'
 import { KpiCard, Card, CardHeader, CardBody } from '../components/ui/Card'
 import { getAuth, clearAuth, apiFetch, unwrapList } from '../lib/auth'
 import { extractApiError, formatDateTime } from '../lib/format'
@@ -44,34 +46,43 @@ export default function PersetujuanOpname() {
   const [outcome, setOutcome] = useState(null)
   const [errorBanner, setErrorBanner] = useState('')
 
-  useEffect(() => {
-    let active = true
-    async function loadOpnames() {
-      setLoading(true)
-      setErrorBanner('')
-      try {
-        const res = await apiFetch('/api/opnames/')
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          if (active) setErrorBanner(extractApiError(err, `Gagal memuat daftar opname (${res.status})`))
-          return
-        }
-        const list = unwrapList(await res.json().catch(() => null))
-        if (active) {
-          setSessions(list)
-          if (list.length > 0) {
-            const first = list[0]
-            setSelectedSessionId(first.id_opname ?? first.id)
-          }
-        }
-      } catch {
-        if (active) setErrorBanner('Gagal terhubung ke server untuk memuat sesi opname.')
-      } finally {
-        if (active) setLoading(false)
+  // State untuk Modal Buat Sesi & Input Stok Opname
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [rakItemsMap, setRakItemsMap] = useState({})
+  const [loadingItems, setLoadingItems] = useState(false)
+  const [selectedRak, setSelectedRak] = useState('')
+  const [opnameKeterangan, setOpnameKeterangan] = useState('')
+  const [opnameInputs, setOpnameInputs] = useState({})
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+
+  async function reloadOpnames(selectId = null) {
+    setLoading(true)
+    setErrorBanner('')
+    try {
+      const res = await apiFetch('/api/opnames/')
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setErrorBanner(extractApiError(err, `Gagal memuat daftar opname (${res.status})`))
+        return
       }
+      const list = unwrapList(await res.json().catch(() => null))
+      setSessions(list)
+      if (selectId) {
+        setSelectedSessionId(selectId)
+      } else if (list.length > 0) {
+        const first = list[0]
+        setSelectedSessionId(first.id_opname ?? first.id)
+      }
+    } catch {
+      setErrorBanner('Gagal terhubung ke server untuk memuat sesi opname.')
+    } finally {
+      setLoading(false)
     }
-    loadOpnames()
-    return () => { active = false }
+  }
+
+  useEffect(() => {
+    reloadOpnames()
   }, [])
 
   useEffect(() => {
@@ -147,6 +158,99 @@ export default function PersetujuanOpname() {
     }
   }
 
+  async function handleOpenCreate() {
+    setCreateError('')
+    setOpnameInputs({})
+    setOpnameKeterangan('')
+    setSelectedRak('')
+    setShowCreateModal(true)
+    if (Object.keys(rakItemsMap).length === 0) {
+      setLoadingItems(true)
+      try {
+        const res = await apiFetch('/api/items/')
+        if (res.ok) {
+          const list = unwrapList(await res.json().catch(() => null))
+          const grouped = {}
+          list.forEach((it, idx) => {
+            if (!it || typeof it !== 'object') return
+            const rak = String(
+              it.rak ?? it.kode_lokasi ?? it.lokasi?.nama_rak ?? it.lokasi?.kode_lokasi ?? 'UMUM'
+            ).replace(/^RAK\s+/i, '')
+            if (!grouped[rak]) grouped[rak] = []
+            grouped[rak].push({
+              id: it.id_barang ?? it.id ?? idx + 1,
+              sku: it.sku ?? it.kode_barang ?? `BRG-00${idx + 1}`,
+              nama: it.nama ?? it.nama_barang ?? '-',
+              stokSistem: Number(it.stok ?? it.stok_saat_ini ?? 0),
+            })
+          })
+          setRakItemsMap(grouped)
+          const firstRak = Object.keys(grouped)[0] ?? ''
+          setSelectedRak(firstRak)
+        }
+      } catch {
+        setCreateError('Gagal memuat daftar barang dari server.')
+      } finally {
+        setLoadingItems(false)
+      }
+    } else {
+      const firstRak = Object.keys(rakItemsMap)[0] ?? ''
+      setSelectedRak(firstRak)
+    }
+  }
+
+  const modalRakList = Object.keys(rakItemsMap)
+  const modalItems = selectedRak ? (rakItemsMap[selectedRak] ?? []) : []
+
+  async function handleCreateSubmit(e) {
+    e?.preventDefault?.()
+    if (!selectedRak || modalItems.length === 0) {
+      setCreateError('Pilih rak yang memiliki barang terlebih dahulu.')
+      return
+    }
+    setCreating(true)
+    setCreateError('')
+    try {
+      const ket = opnameKeterangan.trim() || `Audit Rak ${selectedRak}`
+      const res = await apiFetch('/api/opnames/', {
+        method: 'POST',
+        body: JSON.stringify({ keterangan: ket }),
+      })
+      const created = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(extractApiError(created, `Gagal membuat sesi opname (${res.status})`))
+      }
+      const opnameId = created?.id_opname ?? created?.data?.id_opname ?? created?.data?.id ?? created?.id
+      if (!opnameId) throw new Error('ID sesi opname tidak ditemukan pada respons server.')
+
+      for (const item of modalItems) {
+        const raw = opnameInputs[item.sku]?.stokFisik
+        const stokFisik =
+          raw === '' || raw === undefined ? item.stokSistem : Math.max(0, Math.trunc(Number(raw)))
+        const catatan = (opnameInputs[item.sku]?.keterangan ?? '').trim()
+        const detRes = await apiFetch(`/api/opnames/${opnameId}/details`, {
+          method: 'POST',
+          body: JSON.stringify({
+            barang_id: Number(item.id),
+            stok_fisik: Number(stokFisik),
+            ...(catatan ? { keterangan: catatan } : {}),
+          }),
+        })
+        if (!detRes.ok) {
+          const detErr = await detRes.json().catch(() => ({}))
+          throw new Error(extractApiError(detErr, `Gagal menyimpan rincian ${item.sku} (${detRes.status})`))
+        }
+      }
+
+      setShowCreateModal(false)
+      await reloadOpnames(opnameId)
+    } catch (err) {
+      setCreateError(err.message || 'Gagal menyimpan sesi opname.')
+    } finally {
+      setCreating(false)
+    }
+  }
+
   const currentSession = sessions.find((s) => (s.id_opname ?? s.id) === selectedSessionId)
   const isFinalized = FINAL_STATUSES.has(String(currentSession?.status ?? '').toUpperCase())
   const totalDiperiksa = details.length
@@ -159,6 +263,11 @@ export default function PersetujuanOpname() {
       userName={user?.name || 'Kepala Gudang'}
       onLogout={handleLogout}
       pageTitle="Persetujuan Stok Opname"
+      actions={
+        <Btn variant="primary" icon={Plus} onClick={handleOpenCreate}>
+          Buat Sesi Opname
+        </Btn>
+      }
     >
       {errorBanner && (
         <div className="mb-5 flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
@@ -334,6 +443,135 @@ export default function PersetujuanOpname() {
           </div>
         </div>
       )}
+
+      {/* Modal Buat Sesi & Input Stok Opname */}
+      <Modal
+        open={showCreateModal}
+        onClose={() => !creating && setShowCreateModal(false)}
+        title="Buat Sesi & Input Stok Opname Fisik"
+        maxWidth="max-w-3xl"
+      >
+        <form onSubmit={handleCreateSubmit} className="space-y-4">
+          {createError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-700">
+              {createError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-[13px] font-medium text-[#374151]">Pilih Rak</label>
+              <Select
+                value={selectedRak}
+                onChange={(e) => {
+                  setSelectedRak(e.target.value)
+                  setOpnameInputs({})
+                }}
+                disabled={loadingItems}
+              >
+                {modalRakList.length === 0 ? (
+                  <option value="">{loadingItems ? 'Memuat rak...' : 'Tidak ada rak'}</option>
+                ) : (
+                  modalRakList.map((rak) => (
+                    <option key={rak} value={rak}>
+                      Rak {rak} ({rakItemsMap[rak].length} barang)
+                    </option>
+                  ))
+                )}
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[13px] font-medium text-[#374151]">Keterangan Sesi (Opsional)</label>
+              <input
+                type="text"
+                value={opnameKeterangan}
+                onChange={(e) => setOpnameKeterangan(e.target.value)}
+                placeholder={selectedRak ? `Audit Rak ${selectedRak}` : 'Keterangan sesi opname'}
+                className="w-full rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2 text-[13.5px] text-[#111827] outline-none focus:border-[#1D4ED8]"
+              />
+            </div>
+          </div>
+
+          <div className="max-h-72 overflow-y-auto rounded-lg border border-[#E5E7EB]">
+            <table className="w-full border-collapse">
+              <thead className="sticky top-0 bg-[#F9FAFB]">
+                <tr className="border-b border-[#E5E7EB]">
+                  <th className="px-3 py-2.5 text-left text-[11.5px] font-semibold uppercase text-[#6B7280]">Barang / SKU</th>
+                  <th className="px-3 py-2.5 text-right text-[11.5px] font-semibold uppercase text-[#6B7280]">Sistem</th>
+                  <th className="px-3 py-2.5 text-right text-[11.5px] font-semibold uppercase text-[#6B7280]">Stok Fisik</th>
+                  <th className="px-3 py-2.5 text-center text-[11.5px] font-semibold uppercase text-[#6B7280]">Selisih</th>
+                  <th className="px-3 py-2.5 text-left text-[11.5px] font-semibold uppercase text-[#6B7280]">Catatan</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB]">
+                {modalItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-[13px] text-[#6B7280]">
+                      {loadingItems ? 'Memuat daftar barang...' : 'Tidak ada barang di rak ini.'}
+                    </td>
+                  </tr>
+                ) : (
+                  modalItems.map((item) => {
+                    const raw = opnameInputs[item.sku]?.stokFisik
+                    const fisik = raw === '' || raw === undefined ? item.stokSistem : Math.max(0, Math.trunc(Number(raw)))
+                    const selisih = fisik - item.stokSistem
+                    return (
+                      <tr key={item.id}>
+                        <td className="px-3 py-2">
+                          <span className="block text-[13px] font-medium text-[#111827]">{item.nama}</span>
+                          <span className="font-mono text-[11.5px] text-[#0037B0]">{item.sku}</span>
+                        </td>
+                        <td className="px-3 py-2 text-right text-[13px] text-[#374151]">{item.stokSistem}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder={String(item.stokSistem)}
+                            value={opnameInputs[item.sku]?.stokFisik ?? ''}
+                            onChange={(e) =>
+                              setOpnameInputs((p) => ({
+                                ...p,
+                                [item.sku]: { ...p[item.sku], stokFisik: e.target.value },
+                              }))
+                            }
+                            className="w-20 rounded-md border border-[#E5E7EB] px-2 py-1 text-right text-[13px] outline-none focus:border-[#1D4ED8]"
+                          />
+                        </td>
+                        <td className={`px-3 py-2 text-center text-[13px] font-semibold ${selisih === 0 ? 'text-emerald-600' : selisih < 0 ? 'text-red-600' : 'text-amber-600'}`}>
+                          {selisih > 0 ? `+${selisih}` : selisih}
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            placeholder="Opsional..."
+                            value={opnameInputs[item.sku]?.keterangan ?? ''}
+                            onChange={(e) =>
+                              setOpnameInputs((p) => ({
+                                ...p,
+                                [item.sku]: { ...p[item.sku], keterangan: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded-md border border-[#E5E7EB] px-2 py-1 text-[12.5px] outline-none focus:border-[#1D4ED8]"
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex justify-end gap-2.5 pt-2">
+            <Btn variant="secondary" type="button" disabled={creating} onClick={() => setShowCreateModal(false)}>
+              Batal
+            </Btn>
+            <Btn variant="primary" type="submit" loading={creating} disabled={creating || modalItems.length === 0}>
+              Simpan Sesi Opname
+            </Btn>
+          </div>
+        </form>
+      </Modal>
     </AppShell>
   )
 }
