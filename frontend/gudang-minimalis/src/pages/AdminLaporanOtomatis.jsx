@@ -256,16 +256,16 @@ export default function AdminLaporanOtomatis() {
     setPageError('')
     try {
       const res = await apiFetch(`/api/schedules/${item.id}/run`, { method: 'POST' })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        setPageError(extractApiError(err, `Gagal memicu eksekusi (${res.status})`))
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.status === 'gagal') {
+        setPageError(data.error || extractApiError(data, `Gagal memicu eksekusi (${res.status})`))
         return
       }
       const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':')
       setSchedules((prev) =>
         prev.map((s) => (s.id === item.id ? { ...s, terakhirJalan: `Baru saja, ${now} WIB (Sukses)` } : s))
       )
-      showToast(`Laporan "${item.nama}" berhasil diproses dan dikirimkan!`)
+      showToast(`Laporan "${item.nama}" berhasil diproses dan dikirim ke ${item.penerima}!`)
     } catch {
       setPageError('Gagal memicu eksekusi jadwal pada server.')
     }
