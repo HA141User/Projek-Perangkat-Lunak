@@ -21,7 +21,6 @@ const MENU_ADMIN = [
   { label: 'Manajemen Pengguna', to: '/admin/pengguna' },
   { label: 'Data Barang', to: '/admin/barang' },
   { label: 'Data Rak', to: '/admin/rak' },
-  { label: 'Persetujuan Opname', to: '/admin/persetujuan' },
   { label: 'Laporan Inventaris', to: '/admin/laporan' },
   { label: 'Laporan Otomatis', to: '/admin/laporan-otomatis' },
   { label: 'Log Aktivitas', to: '/admin/log' },
@@ -102,10 +101,14 @@ export default function LaporanInventaris() {
   const menuItems = role === 'ADMIN' ? MENU_ADMIN : role === 'STAF_GUDANG' ? MENU_STAF : MENU_KEPALA
   const canUseServerExport = role === 'ADMIN' || role === 'KEPALA_GUDANG'
 
+  const [reportJenis, setReportJenis] = useState('transaksi')
   const [dari, setDari] = useState('')
   const [sampai, setSampai] = useState('')
   const [tipeFilter, setTipeFilter] = useState('semua')
   const [rows, setRows] = useState([])
+  const [stokRows, setStokRows] = useState([])
+  const [stokSummary, setStokSummary] = useState({ total_item: 0, total_stok: 0, jumlah_kritis: 0 })
+  const [opnameRows, setOpnameRows] = useState([])
   const [totalServer, setTotalServer] = useState(0)
   const [loading, setLoading] = useState(true)
   const [snackbar, setSnackbar] = useState('')
@@ -118,7 +121,7 @@ export default function LaporanInventaris() {
     }
   }, [])
 
-  // Ambil riwayat mutasi/laporan dari GET /api/transactions/ dan katalog items
+  // Ambil laporan berdasarkan jenis tab (transaksi / stok / opname)
   useEffect(() => {
     if (dari && sampai && dari > sampai) {
       return
@@ -128,13 +131,85 @@ export default function LaporanInventaris() {
     async function loadReports() {
       setLoading(true)
       try {
-        const qs = new URLSearchParams({ limit: '100' })
+        const qs = new URLSearchParams()
         if (dari) qs.set('dari', dari)
         if (sampai) qs.set('sampai', sampai)
 
+        if (reportJenis === 'stok' && canUseServerExport) {
+          const res = await apiFetch('/api/reports/stok')
+          if (!active) return
+          if (res.ok) {
+            const payload = await res.json().catch(() => null)
+            const data = Array.isArray(payload?.data) ? payload.data : unwrapList(payload)
+            setStokRows(data)
+            if (payload?.ringkasan) {
+              setStokSummary(payload.ringkasan)
+            } else {
+              setStokSummary({
+                total_item: data.length,
+                total_stok: data.reduce((s, r) => s + Number(r.stok_saat_ini ?? 0), 0),
+                jumlah_kritis: data.filter((r) => r.status === 'kritis').length,
+              })
+            }
+          }
+          return
+        }
+
+        if (reportJenis === 'opname' && canUseServerExport) {
+          const query = qs.toString()
+          const res = await apiFetch(`/api/reports/opname${query ? `?${query}` : ''}`)
+          if (!active) return
+          if (res.ok) {
+            const payload = await res.json().catch(() => null)
+            const sessions = Array.isArray(payload?.data) ? payload.data : unwrapList(payload)
+            const flattened = []
+            sessions.forEach((op) => {
+              const tgl = formatDateTime(op.tanggal_opname)
+              const items = Array.isArray(op.items) && op.items.length > 0 ? op.items : []
+              if (items.length === 0) {
+                flattened.push({
+                  id: `op-${op.id_opname}-empty`,
+                  id_opname: op.id_opname,
+                  tanggal: tgl,
+                  nama_user: op.nama_user ?? '-',
+                  status: op.status ?? 'draft',
+                  keterangan: op.keterangan ?? '-',
+                  kode_barang: '-',
+                  nama_barang: '(Belum ada detail barang)',
+                  stok_sistem: 0,
+                  stok_fisik: 0,
+                  selisih: 0,
+                })
+              } else {
+                items.forEach((it, idx) => {
+                  flattened.push({
+                    id: `op-${op.id_opname}-${it.barang_id ?? idx}`,
+                    id_opname: op.id_opname,
+                    tanggal: tgl,
+                    nama_user: op.nama_user ?? '-',
+                    status: op.status ?? 'draft',
+                    keterangan: op.keterangan ?? '-',
+                    kode_barang: it.kode_barang ?? '-',
+                    nama_barang: it.nama_barang ?? '-',
+                    stok_sistem: Number(it.stok_sistem ?? 0),
+                    stok_fisik: Number(it.stok_fisik ?? 0),
+                    selisih: Number(it.selisih ?? 0),
+                  })
+                })
+              }
+            })
+            setOpnameRows(flattened)
+          }
+          return
+        }
+
+        const txQs = new URLSearchParams({ limit: '100' })
+        if (dari) txQs.set('dari', dari)
+        if (sampai) txQs.set('sampai', sampai)
+
         const [itemsRes, txRes] = await Promise.all([
           apiFetch('/api/items/'),
-          apiFetch(`/api/transactions/?${qs.toString()}`),
+          apiFetch(`/api/transactions/?${txQs.toString()}`),
         ])
 
         if (!active) return
@@ -155,14 +230,14 @@ export default function LaporanInventaris() {
           setRows(mapTransactionsToRows(list, itemMap))
         }
       } catch (err) {
-        console.warn('Gagal memuat laporan mutasi:', err)
+        console.warn('Gagal memuat laporan:', err)
       } finally {
         if (active) setLoading(false)
       }
     }
     loadReports()
     return () => { active = false }
-  }, [dari, sampai])
+  }, [reportJenis, dari, sampai, canUseServerExport])
 
   function handleDateChange(which, value) {
     const nextDari = which === 'dari' ? value : dari
@@ -189,6 +264,24 @@ export default function LaporanInventaris() {
 
   async function handleExport(format) {
     if (format === 'csv' || !canUseServerExport) {
+      if (reportJenis === 'stok') {
+        showSnack('Mengunduh Laporan Stok (.CSV)...')
+        downloadCSV(
+          `laporan-stok-wh01-${fileStamp()}.csv`,
+          ['SKU', 'NAMA BARANG', 'KATEGORI', 'LOKASI', 'STOK', 'MIN STOK', 'STATUS'],
+          stokRows.map((r) => [r.kode_barang, r.nama_barang, r.kategori, r.lokasi ?? '-', r.stok_saat_ini, r.batas_stok_minimum, r.status])
+        )
+        return
+      }
+      if (reportJenis === 'opname') {
+        showSnack('Mengunduh Laporan Opname (.CSV)...')
+        downloadCSV(
+          `laporan-opname-wh01-${fileStamp()}.csv`,
+          ['TANGGAL', 'ID SESI', 'PELAKSANA', 'SKU', 'BARANG', 'STOK SISTEM', 'STOK FISIK', 'SELISIH', 'STATUS'],
+          opnameRows.map((r) => [r.tanggal, r.id_opname, r.nama_user, r.kode_barang, r.nama_barang, r.stok_sistem, r.stok_fisik, r.selisih, r.status])
+        )
+        return
+      }
       showSnack('Mengunduh Riwayat Transaksi (.CSV)...')
       downloadCSV(
         `riwayat-transaksi-wh01-${fileStamp()}.csv`,
@@ -199,18 +292,21 @@ export default function LaporanInventaris() {
     }
 
     const fmt = format === 'pdf' ? 'pdf' : 'xlsx'
-    showSnack(`Mengunduh Laporan Transaksi (${fmt.toUpperCase()})...`)
+    const labelMap = { transaksi: 'Transaksi', stok: 'Stok Barang', opname: 'Stok Opname' }
+    showSnack(`Mengunduh Laporan ${labelMap[reportJenis]} (${fmt.toUpperCase()})...`)
     try {
       const qs = new URLSearchParams({ format: fmt })
-      if (dari) qs.set('dari', dari)
-      if (sampai) qs.set('sampai', sampai)
-      const res = await apiFetch(`/api/reports/transaksi/export?${qs.toString()}`)
+      if (reportJenis !== 'stok') {
+        if (dari) qs.set('dari', dari)
+        if (sampai) qs.set('sampai', sampai)
+      }
+      const res = await apiFetch(`/api/reports/${reportJenis}/export?${qs.toString()}`)
       if (res.ok) {
         const blob = await res.blob()
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `laporan-transaksi-wh01-${fileStamp()}.${fmt}`
+        a.download = `laporan-${reportJenis}-wh01-${fileStamp()}.${fmt}`
         document.body.appendChild(a)
         a.click()
         a.remove()
@@ -223,7 +319,7 @@ export default function LaporanInventaris() {
     }
 
     downloadCSV(
-      `laporan-inventaris-wh01-${fileStamp()}.csv`,
+      `laporan-${reportJenis}-wh01-${fileStamp()}.csv`,
       ['WAKTU', 'BARANG', 'SKU', 'RAK', 'TIPE', 'JUMLAH', 'OPERATOR', 'CATATAN'],
       filtered.map((r) => [r.waktu, r.barang, r.sku, r.rak, r.tipe, r.jumlah, r.staf, r.catatan])
     )
@@ -233,6 +329,8 @@ export default function LaporanInventaris() {
   const totalMasuk = filtered.filter((r) => r.tipe === 'MASUK').reduce((s, r) => s + r.jumlah, 0)
   const totalKeluar = filtered.filter((r) => r.tipe === 'KELUAR').reduce((s, r) => s + r.jumlah, 0)
   const netto = totalMasuk - totalKeluar
+  const opnameSelisihCount = opnameRows.filter((r) => r.selisih !== 0).length
+  const opnameSessionCount = new Set(opnameRows.map((r) => r.id_opname)).size
 
   return (
     <AppShell
@@ -265,128 +363,274 @@ export default function LaporanInventaris() {
         </div>
       )}
 
-      {/* Filter Bar */}
-      <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-[#E5E7EB] bg-white p-4">
-        <div className="flex items-center gap-2 text-[13.5px] text-[#374151]">
-          <Calendar size={15} className="text-[#6B7280]" />
-          <span>Rentang:</span>
-          <input
-            type="date"
-            value={dari}
-            onChange={(e) => handleDateChange('dari', e.target.value)}
-            className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-2.5 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
-          />
-          <span className="text-[#6B7280]">s/d</span>
-          <input
-            type="date"
-            value={sampai}
-            onChange={(e) => handleDateChange('sampai', e.target.value)}
-            className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-2.5 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
-          />
+      {canUseServerExport && (
+        <div className="mb-5 flex flex-wrap gap-2">
+          {[
+            { id: 'transaksi', label: 'Mutasi Transaksi' },
+            { id: 'stok', label: 'Laporan Stok' },
+            { id: 'opname', label: 'Laporan Opname' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setReportJenis(tab.id)}
+              className={`rounded-lg px-4 py-2 text-[13.5px] font-medium transition-colors ${
+                reportJenis === tab.id
+                  ? 'bg-[#0037B0] text-white'
+                  : 'border border-[#E5E7EB] bg-white text-[#374151] hover:bg-[#F9FAFB]'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
+      )}
 
-        <div className="flex items-center gap-2 text-[13.5px] text-[#374151]">
-          <Filter size={14} className="text-[#6B7280]" />
-          <span>Tipe:</span>
-          <select
-            value={tipeFilter}
-            onChange={(e) => setTipeFilter(e.target.value)}
-            className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
-          >
-            <option value="semua">Semua Mutasi</option>
-            <option value="MASUK">Barang Masuk</option>
-            <option value="KELUAR">Barang Keluar</option>
-          </select>
+      {/* Filter Bar */}
+      {reportJenis !== 'stok' && (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-[#E5E7EB] bg-white p-4">
+          <div className="flex items-center gap-2 text-[13.5px] text-[#374151]">
+            <Calendar size={15} className="text-[#6B7280]" />
+            <span>Rentang:</span>
+            <input
+              type="date"
+              value={dari}
+              onChange={(e) => handleDateChange('dari', e.target.value)}
+              className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-2.5 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
+            />
+            <span className="text-[#6B7280]">s/d</span>
+            <input
+              type="date"
+              value={sampai}
+              onChange={(e) => handleDateChange('sampai', e.target.value)}
+              className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-2.5 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
+            />
+          </div>
+
+          {reportJenis === 'transaksi' && (
+            <div className="flex items-center gap-2 text-[13.5px] text-[#374151]">
+              <Filter size={14} className="text-[#6B7280]" />
+              <span>Tipe:</span>
+              <select
+                value={tipeFilter}
+                onChange={(e) => setTipeFilter(e.target.value)}
+                className="rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-1.5 text-[13px] text-[#111827] outline-none focus:border-[#1D4ED8]"
+              >
+                <option value="semua">Semua Mutasi</option>
+                <option value="MASUK">Barang Masuk</option>
+                <option value="KELUAR">Barang Keluar</option>
+              </select>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {/* KPI Cards */}
-      <div className="mb-5 grid grid-cols-3 gap-4 max-sm:grid-cols-1">
-        <KpiCard
-          label="Total Barang Masuk"
-          value={`+${totalMasuk}`}
-          unit="Unit"
-          delta="Periode terpilih"
-          deltaGood
-        />
-        <KpiCard
-          label="Total Barang Keluar"
-          value={`−${totalKeluar}`}
-          unit="Unit"
-          delta="Distribusi logistik"
-          deltaGood={false}
-        />
-        <KpiCard
-          label="Netto Perubahan Stok"
-          value={`${netto >= 0 ? '+' : ''}${netto}`}
-          unit="Unit"
-          delta="Keseimbangan inventaris"
-          deltaGood={netto >= 0}
-        />
-      </div>
+      {reportJenis === 'stok' ? (
+        <div className="mb-5 grid grid-cols-3 gap-4 max-sm:grid-cols-1">
+          <KpiCard label="Total Jenis Barang" value={stokSummary.total_item} unit="SKU" delta="Katalog aktif" deltaGood />
+          <KpiCard label="Total Stok Tersedia" value={stokSummary.total_stok} unit="Unit" delta="Akumulasi seluruh rak" deltaGood />
+          <KpiCard
+            label="Stok Kritis"
+            value={stokSummary.jumlah_kritis}
+            unit="Item"
+            delta="Di bawah ambang batas"
+            deltaGood={stokSummary.jumlah_kritis === 0}
+          />
+        </div>
+      ) : reportJenis === 'opname' ? (
+        <div className="mb-5 grid grid-cols-3 gap-4 max-sm:grid-cols-1">
+          <KpiCard label="Total Sesi Opname" value={opnameSessionCount} unit="Sesi" delta="Periode terpilih" deltaGood />
+          <KpiCard label="Item Diperiksa" value={opnameRows.length} unit="Baris" delta="Total rekonsiliasi" deltaGood />
+          <KpiCard
+            label="Item Berselisih"
+            value={opnameSelisihCount}
+            unit="Item"
+            delta="Stok sistem ≠ fisik"
+            deltaGood={opnameSelisihCount === 0}
+          />
+        </div>
+      ) : (
+        <div className="mb-5 grid grid-cols-3 gap-4 max-sm:grid-cols-1">
+          <KpiCard
+            label="Total Barang Masuk"
+            value={`+${totalMasuk}`}
+            unit="Unit"
+            delta="Periode terpilih"
+            deltaGood
+          />
+          <KpiCard
+            label="Total Barang Keluar"
+            value={`−${totalKeluar}`}
+            unit="Unit"
+            delta="Distribusi logistik"
+            deltaGood={false}
+          />
+          <KpiCard
+            label="Netto Perubahan Stok"
+            value={`${netto >= 0 ? '+' : ''}${netto}`}
+            unit="Unit"
+            delta="Keseimbangan inventaris"
+            deltaGood={netto >= 0}
+          />
+        </div>
+      )}
 
       {/* Table */}
       <div className="rounded-xl border border-[#E5E7EB] bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
-                <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Waktu</th>
-                <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Nama Barang / SKU</th>
-                <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Rak</th>
-                <th className="px-4 py-3 text-center text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Tipe</th>
-                <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Kuantitas</th>
-                <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Operator</th>
-                <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Mutasi / Catatan</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E5E7EB]">
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
-                    Memuat data laporan mutasi dari server...
-                  </td>
+          {reportJenis === 'stok' ? (
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Nama Barang / SKU</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Kategori</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Rak</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Stok Saat Ini</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Batas Minimum</th>
+                  <th className="px-4 py-3 text-center text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Status</th>
                 </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
-                    Tidak ada data mutasi yang ditemukan di server.
-                  </td>
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB]">
+                {loading ? (
+                  <tr><td colSpan={6} className="py-10 text-center text-[13.5px] text-[#6B7280]">Memuat laporan stok...</td></tr>
+                ) : stokRows.length === 0 ? (
+                  <tr><td colSpan={6} className="py-10 text-center text-[13.5px] text-[#6B7280]">Tidak ada data stok barang.</td></tr>
+                ) : (
+                  stokRows.map((r) => (
+                    <tr key={r.id_barang} className="hover:bg-[#F9FAFB] transition-colors">
+                      <td className="px-4 py-3">
+                        <span className="block text-[13.5px] font-medium text-[#111827]">{r.nama_barang}</span>
+                        <span className="text-[12px] font-mono text-[#0037B0]">{r.kode_barang}</span>
+                      </td>
+                      <td className="px-4 py-3 text-[13.5px] text-[#374151]">{r.kategori}</td>
+                      <td className="px-4 py-3 text-[13.5px] text-[#374151]">{r.lokasi || '-'}</td>
+                      <td className="px-4 py-3 text-right text-[13.5px] font-semibold text-[#111827]">{r.stok_saat_ini}</td>
+                      <td className="px-4 py-3 text-right text-[13.5px] text-[#6B7280]">{r.batas_stok_minimum}</td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant={r.status === 'kritis' ? 'danger' : 'success'}>
+                          {r.status === 'kritis' ? 'KRITIS' : 'AMAN'}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          ) : reportJenis === 'opname' ? (
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Tanggal</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Sesi & Pelaksana</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Barang / SKU</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Sistem</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Fisik</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Selisih</th>
+                  <th className="px-4 py-3 text-center text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Status</th>
                 </tr>
-              ) : (
-                filtered.map((r) => (
-                  <tr key={r.id} className="hover:bg-[#F9FAFB] transition-colors">
-                    <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.waktu}</td>
-                    <td className="px-4 py-3">
-                      <span className="block text-[13.5px] font-medium text-[#111827]">{r.barang}</span>
-                      <span className="text-[12px] font-mono text-[#0037B0]">{r.sku}</span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#374151]">{r.rak}</td>
-                    <td className="px-4 py-3 text-center">
-                      <Badge variant={TIPE_BADGE[r.tipe] || 'neutral'}>{r.tipe}</Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right text-[13.5px] font-semibold text-[#111827]">
-                      {r.tipe === 'MASUK' ? `+${r.jumlah}` : r.tipe === 'KELUAR' ? `−${r.jumlah}` : r.jumlah} unit
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-[#374151]">{r.staf}</td>
-                    <td className="px-4 py-3 text-right text-[13px] text-[#6B7280]">
-                      {r.sebelum !== null && r.sesudah !== null ? (
-                        <>
-                          {r.sebelum} → <span className="font-semibold text-[#111827]">{r.sesudah}</span>
-                        </>
-                      ) : (
-                        <span>{r.catatan || 'Tercatat'}</span>
-                      )}
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB]">
+                {loading ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">Memuat laporan opname...</td></tr>
+                ) : opnameRows.length === 0 ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">Tidak ada data laporan opname.</td></tr>
+                ) : (
+                  opnameRows.map((r) => (
+                    <tr key={r.id} className="hover:bg-[#F9FAFB] transition-colors">
+                      <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.tanggal}</td>
+                      <td className="px-4 py-3">
+                        <span className="block text-[13.5px] font-medium text-[#111827]">Sesi #{r.id_opname}</span>
+                        <span className="text-[12px] text-[#6B7280]">{r.nama_user}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="block text-[13.5px] font-medium text-[#111827]">{r.nama_barang}</span>
+                        <span className="text-[12px] font-mono text-[#0037B0]">{r.kode_barang}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-[13.5px] text-[#374151]">{r.stok_sistem}</td>
+                      <td className="px-4 py-3 text-right text-[13.5px] font-medium text-[#111827]">{r.stok_fisik}</td>
+                      <td className={`px-4 py-3 text-right text-[13.5px] font-semibold ${r.selisih === 0 ? 'text-[#6B7280]' : r.selisih > 0 ? 'text-green-700' : 'text-red-600'}`}>
+                        {r.selisih > 0 ? `+${r.selisih}` : r.selisih}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant={r.status === 'selesai' ? 'success' : 'warning'}>
+                          {r.status.toUpperCase()}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB]">
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Waktu</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Nama Barang / SKU</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Rak</th>
+                  <th className="px-4 py-3 text-center text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Tipe</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Kuantitas</th>
+                  <th className="px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Operator</th>
+                  <th className="px-4 py-3 text-right text-[12px] font-semibold uppercase tracking-wide text-[#6B7280]">Mutasi / Catatan</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB]">
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Memuat data laporan mutasi dari server...
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-10 text-center text-[13.5px] text-[#6B7280]">
+                      Tidak ada data mutasi yang ditemukan di server.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((r) => (
+                    <tr key={r.id} className="hover:bg-[#F9FAFB] transition-colors">
+                      <td className="whitespace-nowrap px-4 py-3 text-[12.5px] text-[#6B7280]">{r.waktu}</td>
+                      <td className="px-4 py-3">
+                        <span className="block text-[13.5px] font-medium text-[#111827]">{r.barang}</span>
+                        <span className="text-[12px] font-mono text-[#0037B0]">{r.sku}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-[13.5px] font-medium text-[#374151]">{r.rak}</td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant={TIPE_BADGE[r.tipe] || 'neutral'}>{r.tipe}</Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right text-[13.5px] font-semibold text-[#111827]">
+                        {r.tipe === 'MASUK' ? `+${r.jumlah}` : r.tipe === 'KELUAR' ? `−${r.jumlah}` : r.jumlah} unit
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-[#374151]">{r.staf}</td>
+                      <td className="px-4 py-3 text-right text-[13px] text-[#6B7280]">
+                        {r.sebelum !== null && r.sesudah !== null ? (
+                          <>
+                            {r.sebelum} → <span className="font-semibold text-[#111827]">{r.sesudah}</span>
+                          </>
+                        ) : (
+                          <span>{r.catatan || 'Tercatat'}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
         <div className="flex items-center justify-between border-t border-[#E5E7EB] px-4 py-3 text-[12.5px] text-[#6B7280]">
-          <span>Menampilkan {filtered.length} baris dari {totalServer} transaksi</span>
-          <span className="font-medium text-[#374151]">Gudang WH-01 · Rekapitulasi Mutasi</span>
+          <span>
+            {reportJenis === 'stok'
+              ? `Menampilkan ${stokRows.length} jenis barang`
+              : reportJenis === 'opname'
+                ? `Menampilkan ${opnameRows.length} detail opname`
+                : `Menampilkan ${filtered.length} baris dari ${totalServer} transaksi`}
+          </span>
+          <span className="font-medium text-[#374151]">
+            Gudang WH-01 · {reportJenis === 'stok' ? 'Laporan Stok' : reportJenis === 'opname' ? 'Laporan Opname' : 'Rekapitulasi Mutasi'}
+          </span>
         </div>
       </div>
     </AppShell>

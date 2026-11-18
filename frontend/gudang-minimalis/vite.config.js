@@ -1,23 +1,19 @@
-
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    include: ['lucide-react', 'react-router'],
+    include: ["lucide-react", "react-router"],
   },
   server: {
     proxy: {
-      '/api': {
-        target: process.env.VITE_BACKEND_URL || 'https://inventaris-gudang.onrender.com',
+      "/api": {
+        target: process.env.VITE_BACKEND_URL || "http://localhost:3000",
         changeOrigin: true,
         secure: true,
       },
     },
   },
-})
+});

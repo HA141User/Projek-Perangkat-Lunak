@@ -15,7 +15,6 @@ const MENU_ADMIN = [
   { to: '/admin/pengguna', label: 'Manajemen Pengguna' },
   { to: '/admin/barang', label: 'Data Barang' },
   { to: '/admin/rak', label: 'Data Rak' },
-  { to: '/admin/persetujuan', label: 'Persetujuan Opname' },
   { to: '/admin/laporan', label: 'Laporan Inventaris' },
   { to: '/admin/laporan-otomatis', label: 'Laporan Otomatis' },
   { to: '/admin/log', label: 'Log Aktivitas' },
