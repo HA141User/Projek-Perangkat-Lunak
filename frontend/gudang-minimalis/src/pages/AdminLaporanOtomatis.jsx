@@ -255,19 +255,19 @@ export default function AdminLaporanOtomatis() {
   async function handleTriggerNow(item) {
     setPageError('')
     try {
-      const res = await apiFetch('/api/cronjob')
+      const res = await apiFetch(`/api/schedules/${item.id}/run`, { method: 'POST' })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        setPageError(extractApiError(err, `Gagal memicu cronjob (${res.status})`))
+        setPageError(extractApiError(err, `Gagal memicu eksekusi (${res.status})`))
         return
       }
       const now = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':')
       setSchedules((prev) =>
         prev.map((s) => (s.id === item.id ? { ...s, terakhirJalan: `Baru saja, ${now} WIB (Sukses)` } : s))
       )
-      showToast(`Trigger manual berhasil dikirim! Menjalankan eksekusi jadwal...`)
+      showToast(`Laporan "${item.nama}" berhasil diproses dan dikirimkan!`)
     } catch {
-      setPageError('Gagal memicu cronjob pada server.')
+      setPageError('Gagal memicu eksekusi jadwal pada server.')
     }
   }
 
