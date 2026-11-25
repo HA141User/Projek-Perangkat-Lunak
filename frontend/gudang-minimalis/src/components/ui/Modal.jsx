@@ -31,9 +31,9 @@ export default function Modal({
       />
 
       {/* Card */}
-      <div className={`relative w-full ${maxWidth} rounded-xl border border-[#E5E7EB] bg-white shadow-xl`}>
+      <div className={`relative flex max-h-[90vh] w-full flex-col ${maxWidth} rounded-xl border border-[#E5E7EB] bg-white shadow-xl`}>
         {/* Header */}
-        <div className="flex items-start gap-3 border-b border-[#E5E7EB] px-6 py-5">
+        <div className="flex shrink-0 items-start gap-3 border-b border-[#E5E7EB] px-6 py-5">
           {Icon && (
             <span className={`grid size-9 shrink-0 place-items-center rounded-lg ${iconBg} text-[#0037B0]`}>
               <Icon size={18} />
@@ -53,11 +53,11 @@ export default function Modal({
         </div>
 
         {/* Body */}
-        <div className="px-6 py-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
 
         {/* Footer */}
         {footer && (
-          <div className="flex justify-end gap-3 border-t border-[#E5E7EB] px-6 py-4">
+          <div className="flex shrink-0 justify-end gap-3 border-t border-[#E5E7EB] px-6 py-4">
             {footer}
           </div>
         )}
